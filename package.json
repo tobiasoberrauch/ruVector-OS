@@ -1,0 +1,51 @@
+{
+  "name": "ruvector-os",
+  "version": "0.1.0",
+  "description": "System-level intelligence layer for macOS — semantic search that learns, runs 100% locally",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "ruvector-memory": "dist/cli/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/cli/cli.js start",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "vector-database",
+    "semantic-search",
+    "knowledge-graph",
+    "macos",
+    "local-ai",
+    "mcp"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "@ruvector/gnn": "^0.1.22",
+    "@ruvector/gnn-darwin-arm64": "^0.1.19",
+    "@ruvector/graph-node": "^0.1.26",
+    "chalk": "^5.4.0",
+    "chokidar": "^4.0.0",
+    "commander": "^13.1.0",
+    "express": "^4.21.0",
+    "onnxruntime-node": "^1.20.0",
+    "ora": "^8.1.0",
+    "ruvector": "^0.1.96",
+    "sql.js": "^1.12.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.0.0",
+    "@types/sql.js": "^1.4.9",
+    "@types/ws": "^8.5.0",
+    "typescript": "^5.7.0"
+  }
+}

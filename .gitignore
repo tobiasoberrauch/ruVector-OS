@@ -1,0 +1,22 @@
+node_modules/
+dist/
+*.js.map
+*.d.ts
+!src/**/*.d.ts
+
+# OS files
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Data directory (local user data, never committed)
+data/
+
+# ONNX models (downloaded at runtime)
+models/
+
+# Environment
+.env
+.env.local
