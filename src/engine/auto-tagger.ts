@@ -2,6 +2,7 @@ import { EventEmitter } from 'events';
 import type { MetadataDb } from './metadata-db.js';
 import type { VectorStore } from './vector-store.js';
 import type { OnnxEmbedder } from '../embeddings/onnx-embedder.js';
+import { shouldDeferHeavyWork } from '../shared/battery.js';
 
 const MAX_CLUSTERS = 20;
 const MIN_CLUSTER_SIZE = 3;
@@ -32,6 +33,12 @@ export class AutoTagger extends EventEmitter {
    * Returns the number of tags created and files tagged.
    */
   async runTagging(): Promise<{ tagsCreated: number; filesTagged: number }> {
+    // Battery-aware: defer tagging if on battery with low charge
+    if (await shouldDeferHeavyWork()) {
+      this.emit('tagging-deferred');
+      return { tagsCreated: 0, filesTagged: 0 };
+    }
+
     this.emit('tagging-start');
 
     const allIds = this.metadataDb.getAllFileIds();

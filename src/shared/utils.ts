@@ -3,6 +3,7 @@ import { readFile, stat, mkdir } from 'fs/promises';
 import { existsSync } from 'fs';
 import { extname, basename } from 'path';
 import type { IndexedFile } from './types.js';
+import { stripControlChars } from './sanitize.js';
 
 /** Compute SHA-256 hash of content */
 export function contentHash(content: string): string {
@@ -24,9 +25,18 @@ export async function ensureDir(dir: string): Promise<void> {
 /** Extract text content from a file */
 export async function extractContent(filePath: string): Promise<string> {
   try {
+    const ext = extname(filePath).toLowerCase();
+
+    // PDF extraction (Phase 3)
+    if (ext === '.pdf') {
+      const buffer = await readFile(filePath);
+      const pdfParse = (await import('pdf-parse')).default;
+      return stripControlChars((await pdfParse(buffer)).text.slice(0, 10000));
+    }
+
     const content = await readFile(filePath, 'utf-8');
-    // Truncate to reasonable size for embedding
-    return content.slice(0, 10000);
+    // Strip control characters at ingestion time, truncate to reasonable size
+    return stripControlChars(content.slice(0, 10000));
   } catch {
     return '';
   }

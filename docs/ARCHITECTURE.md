@@ -417,12 +417,25 @@ The main thread orchestrates; compute-heavy work (embedding, HNSW search) happen
 
 ## Future Architecture Considerations
 
-### Tier 2: Learning Layer
+### Tier 2: Learning Layer — IMPLEMENTED
 
-The search history table already captures query → result_ids → clicked_id. The GNN layer (`@ruvector/gnn`) will:
-1. Build a user preference graph from search history
-2. Re-rank vector search results based on learned preferences
-3. Adjust edge weights in the knowledge graph based on click patterns
+The learning subsystem (`src/engine/learning-engine.ts`, `gnn-ranker.ts`, `similarity-sweep.ts`) is code-complete:
+1. **LearningEngine** — Records clicks, computes importance scores with decay, provides learning metrics
+2. **GnnRanker** — Uses `@ruvector/gnn` native bindings to re-rank search results based on learned preferences
+3. **SimilaritySweep** — Periodic background sweep samples files, discovers similar pairs, creates `similar_to` edges in the knowledge graph (battery-aware — defers on low charge)
+
+### Tier 3: Adaptive Intelligence — IMPLEMENTED
+
+The adaptive intelligence subsystem (`src/engine/query-expander.ts`, `context-tracker.ts`, `auto-tagger.ts`) is code-complete:
+1. **QueryExpander** — Auto-expands sparse queries using related terms from search history and embedding similarity
+2. **ContextTracker** — Boosts recently accessed files in search results; records context events for temporal awareness
+3. **AutoTagger** — Clusters indexed files by embedding similarity, assigns human-readable topic tags (battery-aware)
+4. **SearchAnalytics** — Top queries, daily volume, click-through rate metrics
+
+### Security Hardening — IMPLEMENTED
+
+1. **Prompt injection mitigation** (`src/shared/sanitize.ts`) — All file content in MCP responses is wrapped in `[FILE_CONTENT]` delimiters with a data preamble. Control characters stripped at ingestion.
+2. **Dashboard XSS protection** — All dynamic values escaped via `esc()` before innerHTML interpolation.
 
 ### Tier 3: Native UI Layer
 
@@ -457,18 +470,36 @@ src/
 │   └── onnx-embedder.ts        # ONNX inference (embed, tokenize, lazy load)
 ├── engine/
 │   ├── vector-store.ts         # HNSW vector index (ruvector)
-│   ├── metadata-db.ts          # SQLite metadata (sql.js)
+│   ├── metadata-db.ts          # SQLite metadata (sql.js), 768 lines
 │   ├── knowledge-graph.ts      # Graph DB (@ruvector/graph-node + fallback)
 │   ├── indexer.ts              # Batch indexing pipeline
-│   └── search.ts               # Unified search engine
+│   ├── search.ts               # Unified search engine (vector + graph + learning)
+│   ├── learning-engine.ts      # Tier 2: click tracking, importance scores, decay
+│   ├── gnn-ranker.ts           # Tier 2: GNN re-ranking via @ruvector/gnn
+│   ├── similarity-sweep.ts     # Tier 2: periodic similar-file discovery (battery-aware)
+│   ├── query-expander.ts       # Tier 3: auto-expand sparse queries
+│   ├── context-tracker.ts      # Tier 3: context-aware search boosting
+│   └── auto-tagger.ts          # Tier 3: embedding-based file clustering & tagging (battery-aware)
 ├── mcp/
-│   └── server.ts               # MCP server (4 tools, stdio transport)
+│   └── server.ts               # MCP server (7 tools, stdio transport, injection-hardened)
 ├── dashboard/
-│   └── server.ts               # Web dashboard (Express + WS + inline HTML)
+│   └── server.ts               # Web dashboard (Express + WS + inline HTML, XSS-safe)
 └── shared/
     ├── types.ts                # TypeScript interfaces and defaults
     ├── paths.ts                # All file system paths (centralized)
-    └── utils.ts                # Hash, extract, format utilities
+    ├── utils.ts                # Hash, extract, format utilities (+ PDF extraction)
+    ├── sanitize.ts             # Security: MCP content wrapping, HTML escaping
+    └── battery.ts              # macOS battery detection (pmset)
 ```
 
-Total: **16 source files**, ~2,500 lines of TypeScript.
+Test files:
+```
+src/
+├── shared/
+│   ├── sanitize.test.ts        # Content wrapping, HTML escaping, injection strings
+│   └── utils.test.ts           # contentHash, fileId, shouldIndex, extractContent, formatBytes
+└── engine/
+    └── metadata-db.test.ts     # Full CRUD, search history, importance, tags, context, analytics
+```
+
+Total: **25 source files** + **3 test files**, ~4,500+ lines of TypeScript.

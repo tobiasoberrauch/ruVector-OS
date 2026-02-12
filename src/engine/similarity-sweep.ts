@@ -2,6 +2,7 @@ import { EventEmitter } from 'events';
 import type { MetadataDb } from './metadata-db.js';
 import type { VectorStore } from './vector-store.js';
 import type { KnowledgeGraph } from './knowledge-graph.js';
+import { shouldDeferHeavyWork } from '../shared/battery.js';
 
 const DEFAULT_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
 const SAMPLE_SIZE = 100;
@@ -66,6 +67,13 @@ export class SimilaritySweep extends EventEmitter {
    */
   async runSweep(): Promise<{ filesProcessed: number; edgesCreated: number }> {
     if (this.running) return { filesProcessed: 0, edgesCreated: 0 };
+
+    // Battery-aware: defer sweep if on battery with low charge
+    if (await shouldDeferHeavyWork()) {
+      this.emit('sweep-deferred');
+      return { filesProcessed: 0, edgesCreated: 0 };
+    }
+
     this.running = true;
     this.emit('sweep-start');
 

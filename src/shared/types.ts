@@ -153,6 +153,7 @@ export const DEFAULT_CONFIG: RuvectorConfig = {
     '.r', '.R', '.jl',
     '.tex', '.bib',
     '.csv', '.tsv',
+    '.pdf',
     '.env', '.gitignore', '.dockerignore',
     '.prisma', '.proto',
   ],

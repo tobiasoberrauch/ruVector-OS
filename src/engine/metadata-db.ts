@@ -15,17 +15,22 @@ export class MetadataDb {
   private db: SqlJsDb | null = null;
   private dirty = false;
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
+  private dbPath: string;
+
+  constructor(dbPath?: string) {
+    this.dbPath = dbPath ?? DB_PATH;
+  }
 
   async init(): Promise<void> {
-    await ensureDir(dirname(DB_PATH));
+    await ensureDir(dirname(this.dbPath));
 
     const SQL = await initSqlJs();
 
     // Load existing database if it exists
     let buffer: Buffer | null = null;
     try {
-      await access(DB_PATH);
-      buffer = await readFile(DB_PATH);
+      await access(this.dbPath);
+      buffer = await readFile(this.dbPath);
     } catch {
       // No existing DB
     }
@@ -721,7 +726,7 @@ export class MetadataDb {
         const data = this.db.export();
         const buffer = Buffer.from(data);
         // Synchronous write on close since we can't await
-        import('fs').then(fs => fs.writeFileSync(DB_PATH, buffer));
+        import('fs').then(fs => fs.writeFileSync(this.dbPath, buffer));
       } catch {
         // Best effort
       }
@@ -735,7 +740,7 @@ export class MetadataDb {
     if (!this.db) return;
     const data = this.db.export();
     const buffer = Buffer.from(data);
-    await writeFile(DB_PATH, buffer);
+    await writeFile(this.dbPath, buffer);
     this.dirty = false;
   }
 

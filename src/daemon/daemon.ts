@@ -155,6 +155,10 @@ export class RuvectorDaemon extends EventEmitter {
       this.emit('log', `Similarity sweep complete: ${stats.filesProcessed} files, ${stats.edgesCreated} new edges`);
     });
 
+    this.sweep.on('sweep-deferred', () => {
+      this.emit('log', 'Similarity sweep deferred: on battery with low charge');
+    });
+
     this.sweep.on('error', (err: Error) => {
       this.emit('error', err);
     });
@@ -162,6 +166,10 @@ export class RuvectorDaemon extends EventEmitter {
     // Wire auto-tagger events
     this.autoTagger.on('tagging-start', () => {
       this.emit('log', 'Auto-tagging started');
+    });
+
+    this.autoTagger.on('tagging-deferred', () => {
+      this.emit('log', 'Auto-tagging deferred: on battery with low charge');
     });
 
     this.autoTagger.on('tagging-end', (stats: { tagsCreated: number; filesTagged: number }) => {

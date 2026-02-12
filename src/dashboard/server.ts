@@ -481,6 +481,12 @@ export class DashboardServer {
     const maxLogs = 100;
     const logs = [];
 
+    // XSS prevention: escape HTML entities in dynamic content
+    function esc(s) {
+      if (s == null) return '';
+      return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+    }
+
     function connect() {
       ws = new WebSocket('ws://' + location.host);
       ws.onopen = () => {
@@ -509,7 +515,7 @@ export class DashboardServer {
         document.getElementById('statUptime').textContent = formatUptime(s.uptime);
 
         const dirList = document.getElementById('dirList');
-        dirList.innerHTML = s.watchedDirs.map(d => '<li>' + d + '</li>').join('');
+        dirList.innerHTML = s.watchedDirs.map(d => '<li>' + esc(d) + '</li>').join('');
       }
       if (msg.type === 'indexed' || msg.type === 'updated' || msg.type === 'deleted') {
         addLog(msg.type + ': ' + (msg.data.path || msg.data.name));
@@ -522,7 +528,7 @@ export class DashboardServer {
     function addLog(text) {
       logs.unshift(new Date().toLocaleTimeString() + ' ' + text);
       if (logs.length > maxLogs) logs.pop();
-      document.getElementById('logOutput').innerHTML = logs.map(l => '<div>' + l + '</div>').join('');
+      document.getElementById('logOutput').innerHTML = logs.map(l => '<div>' + esc(l) + '</div>').join('');
     }
 
     async function doSearch() {
@@ -547,12 +553,12 @@ export class DashboardServer {
         const preview = (r.file.contentPreview || '').slice(0, 150);
         const searchId = r.searchId || 0;
         const fileId = r.file.id || '';
-        const tags = (r.tags || []).map(t => '<span style="background:rgba(88,166,255,0.15);color:var(--accent);padding:1px 6px;border-radius:3px;font-size:11px;margin-right:4px">' + t + '</span>').join('');
-        return '<div class="result-item" onclick="trackClick(' + searchId + ',\\'' + fileId + '\\',' + i + ')">' +
-          '<span class="score">' + score + '%</span>' +
-          '<div class="path">' + r.file.path + '</div>' +
+        const tags = (r.tags || []).map(t => '<span style="background:rgba(88,166,255,0.15);color:var(--accent);padding:1px 6px;border-radius:3px;font-size:11px;margin-right:4px">' + esc(t) + '</span>').join('');
+        return '<div class="result-item" onclick="trackClick(' + searchId + ',\\'' + esc(fileId) + '\\',' + i + ')">' +
+          '<span class="score">' + esc(score) + '%</span>' +
+          '<div class="path">' + esc(r.file.path) + '</div>' +
           (tags ? '<div style="margin-top:4px">' + tags + '</div>' : '') +
-          '<div class="preview">' + preview + '</div>' +
+          '<div class="preview">' + esc(preview) + '</div>' +
         '</div>';
       }).join('');
     }
@@ -652,8 +658,8 @@ export class DashboardServer {
         if (m.topFilesByImportance && m.topFilesByImportance.length > 0) {
           topEl.innerHTML = '<strong>Top files by importance:</strong><br>' +
             m.topFilesByImportance.map(f =>
-              '<span style="color:var(--accent)">' + f.path.split('/').pop() + '</span> ' +
-              '<span style="color:var(--green)">' + f.score.toFixed(3) + '</span>'
+              '<span style="color:var(--accent)">' + esc(f.path.split('/').pop()) + '</span> ' +
+              '<span style="color:var(--green)">' + esc(f.score.toFixed(3)) + '</span>'
             ).join('<br>');
         } else {
           topEl.innerHTML = '<span style="color:var(--text-dim)">No learning data yet. Search and click results to start learning.</span>';
@@ -672,7 +678,7 @@ export class DashboardServer {
         if (a.topQueries && a.topQueries.length > 0) {
           html += '<strong>Top queries:</strong><br>';
           html += a.topQueries.slice(0, 5).map(q =>
-            '<span style="color:var(--accent)">' + q.query + '</span> <span style="color:var(--text-dim)">(' + q.count + 'x)</span>'
+            '<span style="color:var(--accent)">' + esc(q.query) + '</span> <span style="color:var(--text-dim)">(' + esc(q.count) + 'x)</span>'
           ).join('<br>');
         }
         if (a.volumeByDay && a.volumeByDay.length > 0) {
@@ -701,7 +707,7 @@ export class DashboardServer {
         if (data.tags && data.tags.length > 0) {
           el.innerHTML = data.tags.map(t =>
             '<span style="display:inline-block;background:rgba(63,185,80,0.15);color:var(--green);padding:3px 10px;border-radius:4px;margin:3px 4px;font-size:12px">' +
-            t.label + ' <span style="color:var(--text-dim)">(' + t.fileCount + ')</span></span>'
+            esc(t.label) + ' <span style="color:var(--text-dim)">(' + esc(t.fileCount) + ')</span></span>'
           ).join('');
         } else {
           el.innerHTML = 'No tags yet. Tags are auto-assigned when auto-tagging runs.';
