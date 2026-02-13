@@ -1,9 +1,10 @@
 import { createHash } from 'crypto';
 import { readFile, stat, mkdir } from 'fs/promises';
-import { existsSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { extname, basename } from 'path';
 import type { IndexedFile } from './types.js';
 import { stripControlChars } from './sanitize.js';
+import { PID_FILE } from './paths.js';
 
 /** Compute SHA-256 hash of content */
 export function contentHash(content: string): string {
@@ -83,6 +84,28 @@ export function formatBytes(bytes: number): string {
   const sizes = ['B', 'KB', 'MB', 'GB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
+}
+
+/** Check if a process with the given PID is currently running */
+export function isProcessRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Read the daemon PID from the PID file. Returns null if file doesn't exist or is invalid. */
+export function readPidFile(): number | null {
+  try {
+    if (!existsSync(PID_FILE)) return null;
+    const content = readFileSync(PID_FILE, 'utf-8').trim();
+    const pid = parseInt(content, 10);
+    return Number.isNaN(pid) ? null : pid;
+  } catch {
+    return null;
+  }
 }
 
 /** Format milliseconds to human-readable duration */

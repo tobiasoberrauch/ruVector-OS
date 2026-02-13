@@ -8,6 +8,7 @@ const DEFAULT_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
 const SAMPLE_SIZE = 100;
 const TOP_K = 5;
 const SIMILARITY_THRESHOLD = 0.7;
+const DUPLICATE_THRESHOLD = 0.95;
 const RATE_LIMIT_PER_SEC = 20;
 
 /**
@@ -112,9 +113,13 @@ export class SimilaritySweep extends EventEmitter {
             // Skip self-matches
             if (match.id === fileId) continue;
 
-            // Create similar_to edge (idempotent — graph handles duplicates)
+            // Create edge based on similarity level
             try {
-              await this.graph.connectSimilarFiles(fileId, match.id, match.score);
+              if (match.score >= DUPLICATE_THRESHOLD) {
+                await this.graph.connectDuplicateFiles(fileId, match.id, match.score);
+              } else {
+                await this.graph.connectSimilarFiles(fileId, match.id, match.score);
+              }
               edgesCreated++;
             } catch {
               // Edge already exists or node missing; skip

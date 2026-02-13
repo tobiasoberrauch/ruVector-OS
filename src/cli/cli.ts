@@ -15,8 +15,8 @@ import {
   isLaunchAgentLoaded,
   removeLaunchAgent,
 } from '../daemon/launchagent.js';
-import { DATA_DIR, PID_FILE, LAUNCH_AGENT_PLIST } from '../shared/paths.js';
-import { ensureDir, formatBytes, formatDuration } from '../shared/utils.js';
+import { DATA_DIR, PID_FILE, VECTOR_DIR, GRAPH_DIR, LAUNCH_AGENT_PLIST, BIN_DIR, OCR_BINARY_PATH } from '../shared/paths.js';
+import { ensureDir, formatBytes, formatDuration, isProcessRunning, readPidFile } from '../shared/utils.js';
 import { OnnxEmbedder } from '../embeddings/onnx-embedder.js';
 
 const program = new Command();
@@ -30,7 +30,8 @@ program
 program
   .command('init')
   .description('Initialize RuVector OS (create data directory, download model)')
-  .action(async () => {
+  .option('--redownload', 'Force re-download of ONNX model and tokenizer', false)
+  .action(async (opts) => {
     console.log('Initializing RuVector OS...');
 
     await ensureDir(DATA_DIR);
@@ -40,7 +41,43 @@ program
     console.log('  Config created');
 
     const embedder = new OnnxEmbedder();
-    await embedder.downloadModel((msg) => console.log(`  ${msg}`));
+    if (opts.redownload) {
+      console.log('  Force re-downloading model...');
+      await embedder.redownloadModel((msg) => console.log(`  ${msg}`));
+    } else {
+      await embedder.downloadModel((msg) => console.log(`  ${msg}`));
+    }
+
+    // Compile OCR helper if swiftc is available (macOS only)
+    try {
+      const { execFile } = await import('child_process');
+      const { promisify } = await import('util');
+      const { existsSync } = await import('fs');
+      const { dirname, join: pathJoin } = await import('path');
+      const { fileURLToPath } = await import('url');
+      const execFileAsync = promisify(execFile);
+
+      // Find the Swift source file
+      const __filename = fileURLToPath(import.meta.url);
+      const projectRoot = dirname(dirname(dirname(__filename)));
+      const swiftSource = pathJoin(projectRoot, 'scripts', 'ocr-helper.swift');
+
+      if (existsSync(swiftSource)) {
+        await ensureDir(BIN_DIR);
+        console.log('  Compiling OCR helper...');
+        await execFileAsync('swiftc', [
+          swiftSource,
+          '-o', OCR_BINARY_PATH,
+          '-O',
+          '-framework', 'Vision',
+          '-framework', 'CoreGraphics',
+          '-framework', 'ImageIO',
+        ], { timeout: 60000 });
+        console.log('  OCR helper compiled');
+      }
+    } catch {
+      console.log('  OCR helper: skipped (swiftc not available or compilation failed)');
+    }
 
     console.log('');
     console.log('Ready. Run \'ruvector-memory start --watch <dir>\' to begin indexing.');
@@ -472,6 +509,55 @@ program
     }
     console.error('Daemon not running. Start the daemon first.');
     process.exit(1);
+  });
+
+// ── cleanup ──────────────────────────────────────────
+program
+  .command('cleanup')
+  .description('Clean stale lock files left by a crashed daemon')
+  .action(async () => {
+    const pid = readPidFile();
+    if (pid !== null && isProcessRunning(pid)) {
+      console.log(`Daemon is still running (PID ${pid}). Stop it first.`);
+      process.exit(1);
+    }
+
+    let cleaned = 0;
+    const lockPatterns = ['.lock', '-shm', '-wal', '-journal'];
+    const dirs = [VECTOR_DIR, GRAPH_DIR];
+
+    for (const dir of dirs) {
+      if (!existsSync(dir)) continue;
+      const { readdirSync, unlinkSync } = await import('fs');
+      for (const file of readdirSync(dir)) {
+        if (lockPatterns.some(p => file.endsWith(p))) {
+          try {
+            unlinkSync(resolve(dir, file));
+            console.log(`  Removed: ${file}`);
+            cleaned++;
+          } catch {
+            // skip
+          }
+        }
+      }
+    }
+
+    // Clean stale PID file
+    if (pid !== null && !isProcessRunning(pid)) {
+      try {
+        await rm(PID_FILE);
+        console.log(`  Removed stale PID file`);
+        cleaned++;
+      } catch {
+        // skip
+      }
+    }
+
+    if (cleaned === 0) {
+      console.log('No stale lock files found.');
+    } else {
+      console.log(`Cleaned ${cleaned} stale file(s).`);
+    }
   });
 
 // ── mcp-server ───────────────────────────────────────

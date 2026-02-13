@@ -13,8 +13,11 @@ import { SimilaritySweep } from '../engine/similarity-sweep.js';
 import { QueryExpander } from '../engine/query-expander.js';
 import { ContextTracker } from '../engine/context-tracker.js';
 import { AutoTagger } from '../engine/auto-tagger.js';
+import { ContentExtractor } from '../engine/content-extractor.js';
+import { Chunker } from '../engine/chunker.js';
 import { loadConfig, saveConfig } from './config.js';
-import { PID_FILE } from '../shared/paths.js';
+import { validateConfigUpdate, type ConfigValidationResult } from './config-validator.js';
+import { PID_FILE, OCR_BINARY_PATH } from '../shared/paths.js';
 import type { RuvectorConfig, DaemonStatus, SearchQuery, SearchResultWithTracking, WatcherEvent, LearningMetrics } from '../shared/types.js';
 
 /**
@@ -69,6 +72,24 @@ export class RuvectorDaemon extends EventEmitter {
       this.graph,
       this.embedder,
     );
+
+    // Wire Phase 2 content intelligence components
+    const contentExtractor = new ContentExtractor();
+    const chunker = new Chunker();
+
+    // Enable OCR if configured and binary exists
+    if (this.config.ocrEnabled) {
+      const { existsSync } = await import('fs');
+      if (existsSync(OCR_BINARY_PATH)) {
+        contentExtractor.setOcrBinary(OCR_BINARY_PATH);
+        this.emit('log', 'OCR enabled');
+      } else {
+        this.emit('log', 'OCR configured but helper binary not found. Run: ruvector-memory init');
+      }
+    }
+
+    this.indexer.setContentExtractor(contentExtractor);
+    this.indexer.setChunker(chunker);
 
     this.searchEngine = new SearchEngine(
       this.vectorStore,
@@ -230,6 +251,10 @@ export class RuvectorDaemon extends EventEmitter {
     // Unload ONNX model
     this.embedder.unload();
 
+    // Close vector store and knowledge graph (release file locks)
+    this.vectorStore.close();
+    this.graph.close();
+
     // Close database
     this.metadataDb.close();
 
@@ -327,6 +352,37 @@ export class RuvectorDaemon extends EventEmitter {
     };
   }
 
+  /** Get duplicate file groups combining hash-based and embedding-based detection */
+  getDuplicates(): Array<{ type: 'hash' | 'embedding'; files: Array<{ id: string; path: string; name: string }> }> {
+    const groups: Array<{ type: 'hash' | 'embedding'; files: Array<{ id: string; path: string; name: string }> }> = [];
+
+    // Hash-based duplicates from MetadataDb
+    const hashDupes = this.metadataDb.getContentHashDuplicates();
+    for (const group of hashDupes) {
+      groups.push({
+        type: 'hash',
+        files: group.files.map(f => ({ id: f.id, path: f.path, name: f.name })),
+      });
+    }
+
+    // Embedding-based duplicates from KnowledgeGraph
+    const embeddingDupes = this.graph.getDuplicateGroups();
+    for (const group of embeddingDupes) {
+      // Resolve paths
+      const files = group.map(node => {
+        const file = this.metadataDb.getFile(node.id);
+        return {
+          id: node.id,
+          path: file?.path ?? node.label,
+          name: file?.name ?? node.label,
+        };
+      });
+      groups.push({ type: 'embedding', files });
+    }
+
+    return groups;
+  }
+
   /** Reset all learning data */
   resetLearning(): void {
     this.learningEngine.reset();
@@ -360,6 +416,32 @@ export class RuvectorDaemon extends EventEmitter {
   /** Get config */
   getConfig(): RuvectorConfig {
     return { ...this.config };
+  }
+
+  /** Update config with partial values. Returns validation result. */
+  async updateConfig(update: Partial<RuvectorConfig>): Promise<ConfigValidationResult> {
+    const validation = validateConfigUpdate(update, this.config);
+    if (!validation.valid) return validation;
+
+    // Hot-reload watchDirs: add/remove watches
+    if (update.watchDirs) {
+      const toAdd = update.watchDirs.filter(d => !this.config.watchDirs.includes(d));
+      const toRemove = this.config.watchDirs.filter(d => !update.watchDirs!.includes(d));
+      for (const dir of toAdd) {
+        await this.watcher.watchDir(dir);
+        this.emit('log', `Added watch: ${dir}`);
+      }
+      for (const dir of toRemove) {
+        await this.watcher.unwatchDir(dir);
+        this.emit('log', `Removed watch: ${dir}`);
+      }
+    }
+
+    // Apply all validated fields to config
+    Object.assign(this.config, update);
+    await saveConfig(this.config);
+
+    return validation;
   }
 
   /** Get the search engine (for MCP server) */

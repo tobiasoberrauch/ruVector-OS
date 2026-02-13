@@ -1,4 +1,4 @@
-import type { SearchQuery, SearchResult, SearchResultWithTracking, IndexedFile } from '../shared/types.js';
+import type { SearchQuery, SearchResult, SearchResultWithTracking, IndexedFile, RelatedFile } from '../shared/types.js';
 import type { VectorStore } from './vector-store.js';
 import type { MetadataDb } from './metadata-db.js';
 import type { KnowledgeGraph } from './knowledge-graph.js';
@@ -83,10 +83,55 @@ export class SearchEngine {
       }
     }
 
-    // 3. Build results with metadata
-    const results: SearchResult[] = [];
+    // 3. Deduplicate chunk results to file level
+    //    When multiple chunks from the same file match, merge into a single result
+    //    with the highest score and concatenated snippets from top-2 matching chunks.
+    const fileResultMap = new Map<string, {
+      fileId: string;
+      bestScore: number;
+      chunkSnippets: Array<{ score: number; text: string; label?: string }>;
+      metadata: Record<string, unknown>;
+    }>();
+
     for (const vr of vectorResults) {
-      const file = this.metadataDb.getFile(vr.id);
+      // Parse chunk ID: either "fileId:chunkIndex" or plain "fileId"
+      const colonIdx = vr.id.indexOf(':');
+      const fId = colonIdx >= 0 ? vr.id.slice(0, colonIdx) : vr.id;
+      const chunkMeta = vr.metadata ?? {};
+
+      if (fileResultMap.has(fId)) {
+        const existing = fileResultMap.get(fId)!;
+        if (vr.score > existing.bestScore) {
+          existing.bestScore = vr.score;
+        }
+        // Collect chunk snippet info from metadata
+        const label = chunkMeta.chunkLabel as string | undefined;
+        const startLine = chunkMeta.startLine as number | undefined;
+        existing.chunkSnippets.push({
+          score: vr.score,
+          text: label ? `[${label}] (line ${startLine ?? '?'})` : '',
+          label: label || undefined,
+        });
+      } else {
+        const label = chunkMeta.chunkLabel as string | undefined;
+        const startLine = chunkMeta.startLine as number | undefined;
+        fileResultMap.set(fId, {
+          fileId: fId,
+          bestScore: vr.score,
+          chunkSnippets: [{
+            score: vr.score,
+            text: label ? `[${label}] (line ${startLine ?? '?'})` : '',
+            label: label || undefined,
+          }],
+          metadata: chunkMeta,
+        });
+      }
+    }
+
+    // 4. Build results with metadata
+    const results: SearchResult[] = [];
+    for (const [fId, entry] of fileResultMap) {
+      const file = this.metadataDb.getFile(fId);
       if (!file) continue;
 
       // Apply filters
@@ -102,21 +147,36 @@ export class SearchEngine {
         ? this.contextTracker.getContextBoost(file.id, file.path) * 0.1
         : 0;
 
-      const finalScore = Math.min(1, vr.score + recencyBoost + contextBoost);
+      const finalScore = Math.min(1, entry.bestScore + recencyBoost + contextBoost);
 
       // Get related files from knowledge graph
       const relatedRaw = await this.graph.getRelatedFiles(file.id, 3);
-      const relatedFiles = relatedRaw
-        .map(r => this.metadataDb.getFile(r.id))
-        .filter((f): f is IndexedFile => f !== null);
+      const relatedFiles: RelatedFile[] = relatedRaw
+        .filter(r => this.metadataDb.getFile(r.id) !== null)
+        .map(r => ({
+          id: r.id,
+          label: this.metadataDb.getFile(r.id)!.path,
+          weight: r.weight,
+          edgeType: r.edgeType as RelatedFile['edgeType'],
+        }));
 
       // Attach tags if available
       const tags = this.metadataDb.getFileTags(file.id);
 
+      // Build snippet from top-2 matching chunks, or fall back to contentPreview
+      const sortedSnippets = entry.chunkSnippets
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 2);
+      const chunkSnippetText = sortedSnippets
+        .map(s => s.text)
+        .filter(Boolean)
+        .join(' | ');
+      const snippet = chunkSnippetText || file.contentPreview;
+
       results.push({
         file,
         score: finalScore,
-        snippet: file.contentPreview,
+        snippet,
         relatedFiles,
         tags: tags.length > 0 ? tags.map(t => t.label) : undefined,
       });
@@ -171,14 +231,20 @@ export class SearchEngine {
   /** Quick search without graph traversal (faster, for autocomplete) */
   async quickSearch(queryText: string, limit = 5): Promise<Array<{ file: IndexedFile; score: number }>> {
     const queryVector = await this.embedder.embed(queryText);
-    const results = await this.vectorStore.search(queryVector, limit, 0.3);
+    const results = await this.vectorStore.search(queryVector, limit * 2, 0.3);
 
-    return results
-      .map(vr => {
-        const file = this.metadataDb.getFile(vr.id);
-        if (!file) return null;
-        return { file, score: vr.score };
-      })
-      .filter((r): r is { file: IndexedFile; score: number } => r !== null);
+    // Deduplicate chunks to file level
+    const seen = new Map<string, { file: IndexedFile; score: number }>();
+    for (const vr of results) {
+      const colonIdx = vr.id.indexOf(':');
+      const fId = colonIdx >= 0 ? vr.id.slice(0, colonIdx) : vr.id;
+      const file = this.metadataDb.getFile(fId);
+      if (!file) continue;
+      if (!seen.has(fId) || vr.score > seen.get(fId)!.score) {
+        seen.set(fId, { file, score: vr.score });
+      }
+    }
+
+    return Array.from(seen.values()).slice(0, limit);
   }
 }

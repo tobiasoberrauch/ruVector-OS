@@ -19,6 +19,18 @@ export class KnowledgeGraph {
   private fallbackEdges: Array<{ source: string; target: string; type: string; weight: number }> = [];
   private useFallback = false;
 
+  /** Whether the graph is open and ready for operations */
+  isOpen(): boolean {
+    return this.graph !== null || this.useFallback;
+  }
+
+  /** Close the knowledge graph, releasing resources */
+  close(): void {
+    this.graph = null;
+    this.fallbackNodes.clear();
+    this.fallbackEdges = [];
+  }
+
   async init(): Promise<void> {
     await ensureDir(GRAPH_DIR);
 
@@ -110,8 +122,68 @@ export class KnowledgeGraph {
     }
   }
 
+  /** Connect two files as duplicates (near-identical content) */
+  async connectDuplicateFiles(fileId1: string, fileId2: string, similarity: number): Promise<void> {
+    const edge = { source: fileId1, target: fileId2, type: 'duplicate_of', weight: similarity };
+    if (this.useFallback || !this.graph) {
+      this.fallbackEdges.push(edge);
+      return;
+    }
+    try {
+      await this.graph.createEdge({
+        from: fileId1,
+        to: fileId2,
+        description: 'duplicate_of',
+        embedding: new Float32Array(this.dimensions),
+        confidence: similarity,
+      });
+    } catch {
+      this.fallbackEdges.push(edge);
+    }
+  }
+
+  /** Get duplicate file groups via connected components of duplicate_of edges */
+  getDuplicateGroups(): Array<Array<{ id: string; label: string }>> {
+    // Build adjacency list from duplicate_of edges
+    const adj = new Map<string, Set<string>>();
+    for (const edge of this.fallbackEdges) {
+      if (edge.type !== 'duplicate_of') continue;
+      if (!adj.has(edge.source)) adj.set(edge.source, new Set());
+      if (!adj.has(edge.target)) adj.set(edge.target, new Set());
+      adj.get(edge.source)!.add(edge.target);
+      adj.get(edge.target)!.add(edge.source);
+    }
+
+    // Find connected components via BFS
+    const visited = new Set<string>();
+    const groups: Array<Array<{ id: string; label: string }>> = [];
+
+    for (const nodeId of adj.keys()) {
+      if (visited.has(nodeId)) continue;
+      const component: Array<{ id: string; label: string }> = [];
+      const queue = [nodeId];
+      while (queue.length > 0) {
+        const current = queue.shift()!;
+        if (visited.has(current)) continue;
+        visited.add(current);
+        component.push({
+          id: current,
+          label: this.fallbackNodes.get(current)?.label ?? current,
+        });
+        for (const neighbor of adj.get(current) ?? []) {
+          if (!visited.has(neighbor)) queue.push(neighbor);
+        }
+      }
+      if (component.length > 1) {
+        groups.push(component);
+      }
+    }
+
+    return groups;
+  }
+
   /** Find files related to a given file through the graph */
-  async getRelatedFiles(fileId: string, limit = 5): Promise<Array<{ id: string; label: string; weight: number }>> {
+  async getRelatedFiles(fileId: string, limit = 5): Promise<Array<{ id: string; label: string; weight: number; edgeType: string }>> {
     if (this.useFallback || !this.graph) {
       return this.fallbackGetRelated(fileId, limit);
     }
@@ -123,6 +195,7 @@ export class KnowledgeGraph {
         id,
         label: this.fallbackNodes.get(id)?.label ?? id,
         weight: 0.5,
+        edgeType: 'similar_to',
       }));
     } catch {
       return this.fallbackGetRelated(fileId, limit);
@@ -165,34 +238,49 @@ export class KnowledgeGraph {
     return [...this.fallbackEdges];
   }
 
-  private fallbackGetRelated(fileId: string, limit: number): Array<{ id: string; label: string; weight: number }> {
-    const connected = new Map<string, number>();
+  private fallbackGetRelated(fileId: string, limit: number): Array<{ id: string; label: string; weight: number; edgeType: string }> {
+    const connected = new Map<string, { weight: number; edgeType: string }>();
+
+    const DIRECT_EDGE_TYPES = ['similar_to', 'co_accessed', 'duplicate_of'];
 
     for (const edge of this.fallbackEdges) {
-      if (edge.source === fileId && edge.type === 'similar_to') {
-        connected.set(edge.target, edge.weight);
-      } else if (edge.target === fileId && edge.type === 'similar_to') {
-        connected.set(edge.source, edge.weight);
+      // Direct edges: similar_to, co_accessed, duplicate_of
+      if (DIRECT_EDGE_TYPES.includes(edge.type)) {
+        if (edge.source === fileId) {
+          const existing = connected.get(edge.target);
+          if (!existing || existing.weight < edge.weight) {
+            connected.set(edge.target, { weight: edge.weight, edgeType: edge.type });
+          }
+        } else if (edge.target === fileId) {
+          const existing = connected.get(edge.source);
+          if (!existing || existing.weight < edge.weight) {
+            connected.set(edge.source, { weight: edge.weight, edgeType: edge.type });
+          }
+        }
       }
       // Two-hop: file -> concept -> file
       if (edge.source === fileId && edge.type === 'contains') {
         const conceptId = edge.target;
         for (const e2 of this.fallbackEdges) {
           if (e2.target === conceptId && e2.type === 'contains' && e2.source !== fileId) {
-            const existing = connected.get(e2.source) ?? 0;
-            connected.set(e2.source, Math.max(existing, edge.weight * e2.weight));
+            const transitiveWeight = edge.weight * e2.weight;
+            const existing = connected.get(e2.source);
+            if (!existing || existing.weight < transitiveWeight) {
+              connected.set(e2.source, { weight: transitiveWeight, edgeType: 'concept' });
+            }
           }
         }
       }
     }
 
     return [...connected.entries()]
-      .sort((a, b) => b[1] - a[1])
+      .sort((a, b) => b[1].weight - a[1].weight)
       .slice(0, limit)
-      .map(([id, weight]) => ({
+      .map(([id, { weight, edgeType }]) => ({
         id,
         label: this.fallbackNodes.get(id)?.label ?? id,
         weight,
+        edgeType,
       }));
   }
 

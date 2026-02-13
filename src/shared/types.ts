@@ -25,6 +25,8 @@ export interface RuvectorConfig {
   modelIdleTimeout: number;
   /** Whether clipboard monitoring is enabled */
   clipboardEnabled: boolean;
+  /** Whether OCR is enabled for image indexing */
+  ocrEnabled: boolean;
   /** Whether the daemon is running */
   running: boolean;
 }
@@ -59,8 +61,8 @@ export interface SearchResult {
   score: number;
   /** Matched content snippet */
   snippet: string;
-  /** Related files from knowledge graph */
-  relatedFiles?: IndexedFile[];
+  /** Related files from knowledge graph with relationship info */
+  relatedFiles?: RelatedFile[];
   /** Auto-assigned topic tags (Tier 3) */
   tags?: string[];
 }
@@ -88,8 +90,16 @@ export interface GraphNode {
 export interface GraphEdge {
   source: string;
   target: string;
-  type: 'contains' | 'relates_to' | 'similar_to' | 'references';
+  type: 'contains' | 'relates_to' | 'similar_to' | 'references' | 'duplicate_of';
   weight: number;
+}
+
+/** A file related to another through the knowledge graph */
+export interface RelatedFile {
+  id: string;
+  label: string;
+  weight: number;
+  edgeType: 'similar_to' | 'co_accessed' | 'duplicate_of' | 'concept';
 }
 
 export interface DaemonStatus {
@@ -117,6 +127,40 @@ export interface WatcherEvent {
     size: number;
     mtime: Date;
   };
+}
+
+/** Result of content extraction from a file */
+export interface ExtractionResult {
+  /** Extracted text content */
+  content: string;
+  /** Structured metadata (frontmatter, OCR info, etc.) */
+  metadata: Record<string, string>;
+  /** MIME type of the file */
+  mimeType: string;
+}
+
+/** A chunk of content from a file */
+export interface Chunk {
+  /** Zero-based chunk index within the file */
+  index: number;
+  /** Text content of this chunk */
+  text: string;
+  /** Starting line number (1-based) */
+  startLine: number;
+  /** Ending line number (1-based, inclusive) */
+  endLine: number;
+  /** Optional label (e.g. function name, class name, heading) */
+  label?: string;
+}
+
+/** Stored chunk metadata for incremental re-embedding */
+export interface StoredChunk {
+  fileId: string;
+  chunkIndex: number;
+  contentHash: string;
+  label: string;
+  startLine: number;
+  endLine: number;
 }
 
 export interface LearningMetrics {
@@ -171,5 +215,6 @@ export const DEFAULT_CONFIG: RuvectorConfig = {
   maxFileSize: 1024 * 1024,  // 1MB
   modelIdleTimeout: 5 * 60 * 1000,  // 5 minutes
   clipboardEnabled: false,
+  ocrEnabled: false,
   running: false,
 };

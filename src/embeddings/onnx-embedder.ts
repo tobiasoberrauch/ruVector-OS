@@ -1,16 +1,46 @@
 import { InferenceSession, Tensor } from 'onnxruntime-node';
-import { readFile, writeFile, access } from 'fs/promises';
+import { readFile, writeFile, access, unlink } from 'fs/promises';
 import { MODEL_PATH, TOKENIZER_PATH, MODEL_DIR } from '../shared/paths.js';
 import { ensureDir } from '../shared/utils.js';
 
 const MODEL_URL = 'https://huggingface.co/Xenova/all-MiniLM-L6-v2/resolve/main/onnx/model_quantized.onnx';
 const TOKENIZER_URL = 'https://huggingface.co/Xenova/all-MiniLM-L6-v2/resolve/main/tokenizer.json';
 
+const MAX_RETRIES = 3;
+const BACKOFF_BASE_MS = 1000; // 1s, 3s, 9s
+
 interface TokenizerConfig {
   model: {
     vocab: Record<string, number>;
   };
   added_tokens: Array<{ id: number; content: string }>;
+}
+
+/** Fetch a URL with exponential backoff retry */
+async function fetchWithRetry(url: string, retries = MAX_RETRIES): Promise<Response> {
+  for (let attempt = 0; attempt < retries; attempt++) {
+    try {
+      const response = await fetch(url);
+      if (response.ok) return response;
+      // Server errors are retryable
+      if (response.status >= 500 && attempt < retries - 1) {
+        await sleep(BACKOFF_BASE_MS * Math.pow(3, attempt));
+        continue;
+      }
+      throw new Error(`Failed to fetch ${url}: ${response.status} ${response.statusText}`);
+    } catch (err: any) {
+      if (attempt < retries - 1 && (err.code === 'ECONNRESET' || err.code === 'ETIMEDOUT' || err.code === 'ENOTFOUND' || err.message?.includes('fetch'))) {
+        await sleep(BACKOFF_BASE_MS * Math.pow(3, attempt));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw new Error(`Failed to fetch ${url} after ${retries} attempts`);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 /**
@@ -24,7 +54,7 @@ export class OnnxEmbedder {
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
   private idleTimeout: number;
   private ready = false;
-  private loading = false;
+  private loadPromise: Promise<void> | null = null;
 
   /** Number of dimensions in output embeddings */
   readonly dimensions = 384;
@@ -44,7 +74,7 @@ export class OnnxEmbedder {
     }
   }
 
-  /** Download model files if not present */
+  /** Download model files if not present, with retry on failure */
   async downloadModel(onProgress?: (msg: string) => void): Promise<void> {
     await ensureDir(MODEL_DIR);
 
@@ -54,43 +84,85 @@ export class OnnxEmbedder {
     }
 
     onProgress?.('Downloading ONNX model (all-MiniLM-L6-v2, ~23MB)...');
-    const modelResponse = await fetch(MODEL_URL);
-    if (!modelResponse.ok) throw new Error(`Failed to download model: ${modelResponse.statusText}`);
+    const modelResponse = await fetchWithRetry(MODEL_URL);
     const modelBuffer = Buffer.from(await modelResponse.arrayBuffer());
     await writeFile(MODEL_PATH, modelBuffer);
     onProgress?.(`Model saved (${(modelBuffer.length / 1024 / 1024).toFixed(1)}MB)`);
 
     onProgress?.('Downloading tokenizer...');
-    const tokenizerResponse = await fetch(TOKENIZER_URL);
-    if (!tokenizerResponse.ok) throw new Error(`Failed to download tokenizer: ${tokenizerResponse.statusText}`);
+    const tokenizerResponse = await fetchWithRetry(TOKENIZER_URL);
     const tokenizerBuffer = Buffer.from(await tokenizerResponse.arrayBuffer());
     await writeFile(TOKENIZER_PATH, tokenizerBuffer);
     onProgress?.('Tokenizer saved');
   }
 
+  /** Force re-download of model files (delete existing first) */
+  async redownloadModel(onProgress?: (msg: string) => void): Promise<void> {
+    this.unload();
+    try { await unlink(MODEL_PATH); } catch { /* not found */ }
+    try { await unlink(TOKENIZER_PATH); } catch { /* not found */ }
+    await this.downloadModel(onProgress);
+  }
+
   /** Load model into memory (lazy — called automatically on first embed) */
   async load(): Promise<void> {
-    if (this.ready || this.loading) return;
-    this.loading = true;
+    // If already ready, nothing to do
+    if (this.ready) return;
 
+    // If another load is in progress, wait for it
+    if (this.loadPromise) {
+      await this.loadPromise;
+      return;
+    }
+
+    this.loadPromise = this.doLoad();
     try {
-      // Load tokenizer vocabulary
-      const tokenizerData = JSON.parse(
+      await this.loadPromise;
+    } finally {
+      this.loadPromise = null;
+    }
+  }
+
+  private async doLoad(): Promise<void> {
+    // Load tokenizer vocabulary with corruption handling
+    let tokenizerData: TokenizerConfig;
+    try {
+      tokenizerData = JSON.parse(
         await readFile(TOKENIZER_PATH, 'utf-8')
       ) as TokenizerConfig;
-      this.vocab = new Map(Object.entries(tokenizerData.model.vocab));
+    } catch (err: any) {
+      if (err instanceof SyntaxError) {
+        // Corrupted tokenizer — delete and re-download once
+        try { await unlink(TOKENIZER_PATH); } catch { /* ignore */ }
+        const tokenizerResponse = await fetchWithRetry(TOKENIZER_URL);
+        const tokenizerBuffer = Buffer.from(await tokenizerResponse.arrayBuffer());
+        await writeFile(TOKENIZER_PATH, tokenizerBuffer);
+        tokenizerData = JSON.parse(
+          await readFile(TOKENIZER_PATH, 'utf-8')
+        ) as TokenizerConfig;
+      } else {
+        throw err;
+      }
+    }
+    this.vocab = new Map(Object.entries(tokenizerData.model.vocab));
 
-      // Load ONNX session
+    // Load ONNX session with corruption handling
+    try {
       this.session = await InferenceSession.create(MODEL_PATH, {
         executionProviders: ['cpu'],
         graphOptimizationLevel: 'all',
       });
-
-      this.ready = true;
-      this.resetIdleTimer();
-    } finally {
-      this.loading = false;
+    } catch (err: any) {
+      // Model file corrupted — delete and throw descriptive error
+      try { await unlink(MODEL_PATH); } catch { /* ignore */ }
+      throw new Error(
+        `ONNX model file is corrupted or incompatible and has been removed. ` +
+        `Run 'ruvector-memory init' to re-download. Original error: ${err.message}`
+      );
     }
+
+    this.ready = true;
+    this.resetIdleTimer();
   }
 
   /** Unload model from memory to save RAM */
@@ -223,3 +295,5 @@ export class OnnxEmbedder {
     }, this.idleTimeout);
   }
 }
+
+export { fetchWithRetry };

@@ -54,6 +54,24 @@ export class DashboardServer {
       res.json(this.daemon.getConfig());
     });
 
+    // API: Update config
+    this.app.put('/api/config', async (req, res) => {
+      try {
+        const result = await this.daemon.updateConfig(req.body);
+        if (!result.valid) {
+          res.status(400).json({ errors: result.errors });
+          return;
+        }
+        res.json({
+          ok: true,
+          requiresRestart: result.requiresRestart,
+          config: this.daemon.getConfig(),
+        });
+      } catch (error: any) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
     // API: Graph data for visualization
     this.app.get('/api/graph', (_req, res) => {
       const graph = this.daemon.getGraph();
@@ -124,6 +142,42 @@ export class DashboardServer {
       try {
         const tags = this.daemon.getTags();
         res.json({ tags });
+      } catch (error: any) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    // API: Related files
+    this.app.get('/api/related/:fileId', async (req, res) => {
+      try {
+        const { fileId } = req.params;
+        const limit = parseInt(req.query.limit as string) || 10;
+        const graph = this.daemon.getGraph();
+        const db = this.daemon.getMetadataDb();
+        const related = await graph.getRelatedFiles(fileId, limit);
+
+        const results = related.map(r => {
+          const file = db.getFile(r.id);
+          return {
+            id: r.id,
+            path: file?.path ?? r.label,
+            name: file?.name ?? r.label,
+            weight: r.weight,
+            edgeType: r.edgeType,
+          };
+        });
+
+        res.json({ related: results });
+      } catch (error: any) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    // API: Duplicates
+    this.app.get('/api/duplicates', (_req, res) => {
+      try {
+        const groups = this.daemon.getDuplicates();
+        res.json({ groups });
       } catch (error: any) {
         res.status(500).json({ error: error.message });
       }
@@ -337,6 +391,30 @@ export class DashboardServer {
       text-overflow: ellipsis;
       white-space: nowrap;
     }
+    .related-panel {
+      margin-top: 6px;
+      padding: 8px 12px;
+      background: var(--bg);
+      border-radius: 4px;
+      font-size: 12px;
+    }
+    .related-panel .related-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 4px 0;
+    }
+    .edge-badge {
+      display: inline-block;
+      padding: 1px 6px;
+      border-radius: 3px;
+      font-size: 10px;
+      font-weight: 600;
+    }
+    .edge-badge.similar_to { background: rgba(88,166,255,0.15); color: var(--accent); }
+    .edge-badge.duplicate_of { background: rgba(248,81,73,0.15); color: var(--red); }
+    .edge-badge.co_accessed { background: rgba(210,153,34,0.15); color: var(--orange); }
+    .edge-badge.concept { background: rgba(63,185,80,0.15); color: var(--green); }
     .dir-list {
       list-style: none;
     }
@@ -559,6 +637,8 @@ export class DashboardServer {
           '<div class="path">' + esc(r.file.path) + '</div>' +
           (tags ? '<div style="margin-top:4px">' + tags + '</div>' : '') +
           '<div class="preview">' + esc(preview) + '</div>' +
+          '<button onclick="event.stopPropagation();toggleRelated(\\'' + esc(fileId) + '\\',' + i + ')" style="margin-top:4px;background:none;border:1px solid var(--border);color:var(--text-dim);padding:2px 8px;border-radius:4px;font-size:11px;cursor:pointer">Related files</button>' +
+          '<div id="related-' + i + '" class="related-panel" style="display:none"></div>' +
         '</div>';
       }).join('');
     }
@@ -628,6 +708,35 @@ export class DashboardServer {
           ctx.font = '9px -apple-system, sans-serif';
           ctx.fillText(node.label, pos.x + 6, pos.y + 3);
         }
+      }
+    }
+
+    async function toggleRelated(fileId, index) {
+      const panel = document.getElementById('related-' + index);
+      if (!panel) return;
+      if (panel.style.display !== 'none') {
+        panel.style.display = 'none';
+        return;
+      }
+      panel.style.display = 'block';
+      panel.innerHTML = '<span style="color:var(--text-dim)">Loading...</span>';
+      try {
+        const res = await fetch('/api/related/' + encodeURIComponent(fileId));
+        const data = await res.json();
+        if (!data.related || data.related.length === 0) {
+          panel.innerHTML = '<span style="color:var(--text-dim)">No related files found.</span>';
+          return;
+        }
+        panel.innerHTML = data.related.map(function(r) {
+          const pct = (r.weight * 100).toFixed(0);
+          return '<div class="related-item">' +
+            '<span class="edge-badge ' + esc(r.edgeType) + '">' + esc(r.edgeType) + '</span>' +
+            '<span style="color:var(--accent);font-family:monospace;font-size:12px">' + esc(r.path) + '</span>' +
+            '<span style="color:var(--text-dim)">' + esc(pct) + '%</span>' +
+          '</div>';
+        }).join('');
+      } catch (e) {
+        panel.innerHTML = '<span style="color:var(--red)">Error loading related files.</span>';
       }
     }
 

@@ -45,3 +45,9 @@ export const LAUNCH_AGENT_PLIST = join(
 
 /** Log file */
 export const LOG_PATH = join(DATA_DIR, 'daemon.log');
+
+/** Binary directory for compiled helpers */
+export const BIN_DIR = join(DATA_DIR, 'bin');
+
+/** Compiled OCR helper binary */
+export const OCR_BINARY_PATH = join(BIN_DIR, 'ocr-helper');

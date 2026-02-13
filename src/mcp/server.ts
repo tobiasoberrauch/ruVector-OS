@@ -53,7 +53,7 @@ export class RuvectorMcpServer {
         });
 
         const text = results.map((r, i) => {
-          const related = r.relatedFiles?.map(f => `    - ${f.path}`).join('\n') ?? '';
+          const related = r.relatedFiles?.map(f => `    - ${f.label} [${f.edgeType}]`).join('\n') ?? '';
           return [
             `${i + 1}. ${r.file.path}`,
             `   Score: ${(r.score * 100).toFixed(1)}%`,
@@ -89,9 +89,16 @@ export class RuvectorMcpServer {
         const related = await graph.getRelatedFiles(id, limit);
         const db = this.daemon.getMetadataDb();
 
+        const edgeLabels: Record<string, string> = {
+          similar_to: 'Similar',
+          co_accessed: 'Co-accessed',
+          duplicate_of: 'Duplicate',
+          concept: 'Shared concept',
+        };
         const text = related.map((r, i) => {
           const file = db.getFile(r.id);
-          return `${i + 1}. ${file?.path ?? r.label} (relevance: ${(r.weight * 100).toFixed(1)}%)`;
+          const typeLabel = edgeLabels[r.edgeType] ?? r.edgeType;
+          return `${i + 1}. ${file?.path ?? r.label} [${typeLabel}] (relevance: ${(r.weight * 100).toFixed(1)}%)`;
         }).join('\n');
 
         return {
@@ -287,6 +294,38 @@ export class RuvectorMcpServer {
 
         return {
           content: [{ type: 'text' as const, text: `All tags:\n${text}` }],
+        };
+      }
+    );
+
+    // Find duplicates tool
+    this.server.tool(
+      'find_duplicates',
+      'Find duplicate or near-duplicate files in the index. Combines hash-based (exact) and embedding-based (semantic) duplicate detection.',
+      {
+        type: z.enum(['all', 'hash', 'embedding']).optional().default('all').describe('Type of duplicates to find: hash (exact), embedding (semantic), or all'),
+      },
+      async ({ type }) => {
+        const dupes = this.daemon.getDuplicates();
+        const filtered = type === 'all' ? dupes : dupes.filter(g => g.type === type);
+
+        if (filtered.length === 0) {
+          return {
+            content: [{ type: 'text' as const, text: 'No duplicate files found.' }],
+          };
+        }
+
+        const text = filtered.map((group, i) => {
+          const typeLabel = group.type === 'hash' ? 'Exact match' : 'Semantic match';
+          const files = group.files.map(f => `    - ${f.path}`).join('\n');
+          return `Group ${i + 1} (${typeLabel}):\n${files}`;
+        }).join('\n\n');
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: `Found ${filtered.length} duplicate group(s):\n\n${text}`,
+          }],
         };
       }
     );

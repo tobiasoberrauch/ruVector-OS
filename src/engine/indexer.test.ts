@@ -18,6 +18,8 @@ function createMockVectorStore() {
     get: vi.fn().mockResolvedValue(null),
     count: vi.fn().mockResolvedValue(0),
     init: vi.fn().mockResolvedValue(undefined),
+    upsertChunks: vi.fn().mockResolvedValue(undefined),
+    deleteByPrefix: vi.fn().mockResolvedValue(0),
   };
 }
 
@@ -33,6 +35,11 @@ function createMockMetadataDb() {
       for (const [id, f] of files) if (f.path === path) files.delete(id);
     }),
     getFile: vi.fn(),
+    setFileMetadataBulk: vi.fn(),
+    clearFileMetadata: vi.fn(),
+    getFileChunks: vi.fn().mockReturnValue([]),
+    upsertFileChunks: vi.fn(),
+    clearFileChunks: vi.fn(),
   };
 }
 
@@ -188,7 +195,8 @@ describe('Indexer', () => {
       await deleted;
 
       expect(metadataDb.deleteFileByPath).toHaveBeenCalledWith(filePath);
-      expect(vectorStore.delete).toHaveBeenCalledWith(id);
+      expect(metadataDb.clearFileChunks).toHaveBeenCalledWith(id);
+      expect(vectorStore.deleteByPrefix).toHaveBeenCalledWith(id);
       expect(graph.removeFileNode).toHaveBeenCalledWith(id);
     });
   });

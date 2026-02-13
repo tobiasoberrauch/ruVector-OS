@@ -3,7 +3,7 @@ import { readFile, writeFile, access } from 'fs/promises';
 import { DB_PATH } from '../shared/paths.js';
 import { ensureDir } from '../shared/utils.js';
 import { dirname } from 'path';
-import type { IndexedFile } from '../shared/types.js';
+import type { IndexedFile, StoredChunk } from '../shared/types.js';
 
 /**
  * SQLite-backed metadata store for indexed files.
@@ -158,6 +158,29 @@ export class MetadataDb {
     this.db.run(`CREATE INDEX IF NOT EXISTS idx_context_ts ON context_events(timestamp)`);
     this.db.run(`CREATE INDEX IF NOT EXISTS idx_context_file ON context_events(file_id)`);
 
+    // Phase 2: Content Intelligence tables
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS file_metadata (
+        file_id TEXT NOT NULL,
+        key TEXT NOT NULL,
+        value TEXT NOT NULL,
+        PRIMARY KEY (file_id, key)
+      )
+    `);
+
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS file_chunks (
+        file_id TEXT NOT NULL,
+        chunk_index INTEGER NOT NULL,
+        content_hash TEXT NOT NULL,
+        label TEXT NOT NULL DEFAULT '',
+        start_line INTEGER NOT NULL,
+        end_line INTEGER NOT NULL,
+        PRIMARY KEY (file_id, chunk_index)
+      )
+    `);
+    this.db.run(`CREATE INDEX IF NOT EXISTS idx_file_chunks_file ON file_chunks(file_id)`);
+
     await this.persist();
   }
 
@@ -247,6 +270,39 @@ export class MetadataDb {
     }
     stmt.free();
     return ids;
+  }
+
+  /** Find groups of files with identical content hashes */
+  getContentHashDuplicates(): Array<{ contentHash: string; files: IndexedFile[] }> {
+    if (!this.db) return [];
+    const groups: Array<{ contentHash: string; files: IndexedFile[] }> = [];
+
+    // Find content_hash values that appear more than once
+    const hashStmt = this.db.prepare(
+      `SELECT content_hash, COUNT(*) as cnt FROM files
+       GROUP BY content_hash HAVING cnt > 1`
+    );
+    const hashes: string[] = [];
+    while (hashStmt.step()) {
+      hashes.push(hashStmt.getAsObject().content_hash as string);
+    }
+    hashStmt.free();
+
+    // For each duplicate hash, get all files
+    for (const hash of hashes) {
+      const fileStmt = this.db.prepare(
+        'SELECT * FROM files WHERE content_hash = ? ORDER BY path'
+      );
+      fileStmt.bind([hash]);
+      const files: IndexedFile[] = [];
+      while (fileStmt.step()) {
+        files.push(this.rowToFile(fileStmt.getAsObject()));
+      }
+      fileStmt.free();
+      groups.push({ contentHash: hash, files });
+    }
+
+    return groups;
   }
 
   /** Log a search query */
@@ -703,6 +759,99 @@ export class MetadataDb {
     this.db.run('DELETE FROM context_events WHERE timestamp < ?', [cutoff]);
     this.schedulePersist();
     return count;
+  }
+
+  // ── File metadata methods (Phase 2) ──────────────────
+
+  /** Get all metadata for a file */
+  getFileMetadata(fileId: string): Record<string, string> {
+    if (!this.db) return {};
+    const result: Record<string, string> = {};
+    const stmt = this.db.prepare('SELECT key, value FROM file_metadata WHERE file_id = ?');
+    stmt.bind([fileId]);
+    while (stmt.step()) {
+      const row = stmt.getAsObject();
+      result[row.key as string] = row.value as string;
+    }
+    stmt.free();
+    return result;
+  }
+
+  /** Set a metadata key-value for a file */
+  setFileMetadata(fileId: string, key: string, value: string): void {
+    if (!this.db) throw new Error('MetadataDb not initialized');
+    this.db.run(
+      `INSERT OR REPLACE INTO file_metadata (file_id, key, value) VALUES (?, ?, ?)`,
+      [fileId, key, value]
+    );
+    this.schedulePersist();
+  }
+
+  /** Set multiple metadata key-values for a file */
+  setFileMetadataBulk(fileId: string, metadata: Record<string, string>): void {
+    if (!this.db) throw new Error('MetadataDb not initialized');
+    for (const [key, value] of Object.entries(metadata)) {
+      this.db.run(
+        `INSERT OR REPLACE INTO file_metadata (file_id, key, value) VALUES (?, ?, ?)`,
+        [fileId, key, value]
+      );
+    }
+    this.schedulePersist();
+  }
+
+  /** Delete all metadata for a file */
+  clearFileMetadata(fileId: string): void {
+    if (!this.db) throw new Error('MetadataDb not initialized');
+    this.db.run('DELETE FROM file_metadata WHERE file_id = ?', [fileId]);
+    this.schedulePersist();
+  }
+
+  // ── File chunks methods (Phase 2) ───────────────────
+
+  /** Get all stored chunks for a file */
+  getFileChunks(fileId: string): StoredChunk[] {
+    if (!this.db) return [];
+    const chunks: StoredChunk[] = [];
+    const stmt = this.db.prepare(
+      'SELECT * FROM file_chunks WHERE file_id = ? ORDER BY chunk_index'
+    );
+    stmt.bind([fileId]);
+    while (stmt.step()) {
+      const row = stmt.getAsObject();
+      chunks.push({
+        fileId: row.file_id as string,
+        chunkIndex: row.chunk_index as number,
+        contentHash: row.content_hash as string,
+        label: (row.label as string) ?? '',
+        startLine: row.start_line as number,
+        endLine: row.end_line as number,
+      });
+    }
+    stmt.free();
+    return chunks;
+  }
+
+  /** Upsert chunk metadata for a file (replaces all chunks for that file) */
+  upsertFileChunks(fileId: string, chunks: StoredChunk[]): void {
+    if (!this.db) throw new Error('MetadataDb not initialized');
+    // Remove existing chunks
+    this.db.run('DELETE FROM file_chunks WHERE file_id = ?', [fileId]);
+    // Insert new chunks
+    for (const chunk of chunks) {
+      this.db.run(
+        `INSERT INTO file_chunks (file_id, chunk_index, content_hash, label, start_line, end_line)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [fileId, chunk.chunkIndex, chunk.contentHash, chunk.label, chunk.startLine, chunk.endLine]
+      );
+    }
+    this.schedulePersist();
+  }
+
+  /** Delete all chunks for a file */
+  clearFileChunks(fileId: string): void {
+    if (!this.db) throw new Error('MetadataDb not initialized');
+    this.db.run('DELETE FROM file_chunks WHERE file_id = ?', [fileId]);
+    this.schedulePersist();
   }
 
   /** Clear all learning data (for reset) */

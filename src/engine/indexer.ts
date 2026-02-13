@@ -4,8 +4,11 @@ import type { VectorStore } from './vector-store.js';
 import type { MetadataDb } from './metadata-db.js';
 import type { KnowledgeGraph } from './knowledge-graph.js';
 import type { OnnxEmbedder } from '../embeddings/onnx-embedder.js';
-import { extractContent, createFileRecord, contentHash, fileId } from '../shared/utils.js';
-import { basename } from 'path';
+import type { ContentExtractor } from './content-extractor.js';
+import type { Chunker } from './chunker.js';
+import type { Chunk, StoredChunk } from '../shared/types.js';
+import { createFileRecord, contentHash, fileId } from '../shared/utils.js';
+import { basename, extname } from 'path';
 
 /**
  * Indexing pipeline:
@@ -26,7 +29,13 @@ export class Indexer extends EventEmitter {
     deleted: 0,
     errors: 0,
     totalEmbeddingTime: 0,
+    chunksEmbedded: 0,
+    chunksSkipped: 0,
+    chunksDeleted: 0,
   };
+
+  private contentExtractor: ContentExtractor | null = null;
+  private chunker: Chunker | null = null;
 
   constructor(
     private vectorStore: VectorStore,
@@ -35,6 +44,16 @@ export class Indexer extends EventEmitter {
     private embedder: OnnxEmbedder,
   ) {
     super();
+  }
+
+  /** Set a ContentExtractor for structured extraction (Phase 2) */
+  setContentExtractor(extractor: ContentExtractor): void {
+    this.contentExtractor = extractor;
+  }
+
+  /** Set a Chunker for multi-vector indexing (Phase 2) */
+  setChunker(chunker: Chunker): void {
+    this.chunker = chunker;
   }
 
   /** Queue a file event for processing */
@@ -86,9 +105,12 @@ export class Indexer extends EventEmitter {
     const id = fileId(event.path);
 
     if (event.type === 'unlink') {
-      // File deleted
+      // File deleted — remove all chunks and metadata
       this.metadataDb.deleteFileByPath(event.path);
-      await this.vectorStore.delete(id);
+      this.metadataDb.clearFileChunks(id);
+      this.metadataDb.clearFileMetadata(id);
+      const deleted = await this.vectorStore.deleteByPrefix(id);
+      this.stats.chunksDeleted += deleted;
       await this.graph.removeFileNode(id);
       this.stats.deleted++;
       this.emit('deleted', event.path);
@@ -96,7 +118,19 @@ export class Indexer extends EventEmitter {
     }
 
     // File added or changed — extract content
-    const content = await extractContent(event.path);
+    let content: string;
+    let extractedMetadata: Record<string, string> = {};
+
+    if (this.contentExtractor) {
+      const extraction = await this.contentExtractor.extract(event.path);
+      content = extraction.content;
+      extractedMetadata = extraction.metadata;
+    } else {
+      // Legacy fallback: use extractContent from utils
+      const { extractContent } = await import('../shared/utils.js');
+      content = await extractContent(event.path);
+    }
+
     if (!content.trim()) return; // Skip empty files
 
     // Check if content actually changed (avoid re-embedding identical content)
@@ -109,22 +143,31 @@ export class Indexer extends EventEmitter {
     // Create file record
     const record = await createFileRecord(event.path, content);
 
-    // Compute embedding
-    const start = performance.now();
-    const vector = await this.embedder.embed(content);
-    const embeddingTime = performance.now() - start;
-    this.stats.totalEmbeddingTime += embeddingTime;
-
-    // Store in vector index
-    await this.vectorStore.upsert(record.id, vector, {
-      path: record.path,
-      name: record.name,
-      extension: record.extension,
-      modifiedAt: record.modifiedAt,
-    });
-
     // Store metadata
     this.metadataDb.upsertFile(record);
+
+    // Chunked or single-vector embedding
+    if (this.chunker) {
+      await this.processChunked(record, content, event.path);
+    } else {
+      // Legacy single-vector path
+      const start = performance.now();
+      const vector = await this.embedder.embed(content);
+      const embeddingTime = performance.now() - start;
+      this.stats.totalEmbeddingTime += embeddingTime;
+
+      await this.vectorStore.upsert(record.id, vector, {
+        path: record.path,
+        name: record.name,
+        extension: record.extension,
+        modifiedAt: record.modifiedAt,
+      });
+    }
+
+    // Store extracted metadata (frontmatter, etc.)
+    if (Object.keys(extractedMetadata).length > 0) {
+      this.metadataDb.setFileMetadataBulk(record.id, extractedMetadata);
+    }
 
     // Update knowledge graph
     await this.graph.addFileNode(record.id, record.name, {
@@ -134,6 +177,23 @@ export class Indexer extends EventEmitter {
 
     // Extract simple concepts from filename and path
     const concepts = this.extractConcepts(record);
+
+    // Add frontmatter tags as concepts
+    if (extractedMetadata.tags) {
+      for (const tag of extractedMetadata.tags.split(',').map(t => t.trim()).filter(Boolean)) {
+        concepts.push(tag.toLowerCase());
+      }
+    }
+
+    // Store title in graph metadata if available
+    if (extractedMetadata.title) {
+      await this.graph.addFileNode(record.id, extractedMetadata.title, {
+        path: record.path,
+        extension: record.extension,
+        title: extractedMetadata.title,
+      });
+    }
+
     for (const concept of concepts) {
       const conceptId = `concept:${concept}`;
       await this.graph.addConceptNode(conceptId, concept);
@@ -147,6 +207,80 @@ export class Indexer extends EventEmitter {
       this.stats.updated++;
       this.emit('updated', record);
     }
+  }
+
+  /** Process a file using chunking — embed each chunk separately */
+  private async processChunked(record: IndexedFile, content: string, filePath: string): Promise<void> {
+    const ext = extname(filePath);
+    const chunks = this.chunker!.chunk(content, ext);
+
+    if (chunks.length === 0) return;
+
+    // Compare with stored chunks to find what changed
+    const storedChunks = this.metadataDb.getFileChunks(record.id);
+    const storedMap = new Map(storedChunks.map(c => [c.chunkIndex, c]));
+
+    // Delete old chunks that no longer exist (file shrank)
+    const oldMaxIndex = storedChunks.length > 0
+      ? Math.max(...storedChunks.map(c => c.chunkIndex))
+      : -1;
+    for (let i = chunks.length; i <= oldMaxIndex; i++) {
+      await this.vectorStore.delete(`${record.id}:${i}`);
+      this.stats.chunksDeleted++;
+    }
+
+    // Embed new/changed chunks
+    const newStoredChunks: StoredChunk[] = [];
+    const chunkVectors: Array<{ index: number; vector: Float32Array; metadata: Record<string, unknown> }> = [];
+
+    for (const chunk of chunks) {
+      const chunkHash = contentHash(chunk.text);
+      const stored = storedMap.get(chunk.index);
+
+      newStoredChunks.push({
+        fileId: record.id,
+        chunkIndex: chunk.index,
+        contentHash: chunkHash,
+        label: chunk.label ?? '',
+        startLine: chunk.startLine,
+        endLine: chunk.endLine,
+      });
+
+      // Skip embedding if chunk content hasn't changed
+      if (stored && stored.contentHash === chunkHash) {
+        this.stats.chunksSkipped++;
+        continue;
+      }
+
+      // Embed this chunk
+      const start = performance.now();
+      const vector = await this.embedder.embed(chunk.text);
+      const embeddingTime = performance.now() - start;
+      this.stats.totalEmbeddingTime += embeddingTime;
+      this.stats.chunksEmbedded++;
+
+      chunkVectors.push({
+        index: chunk.index,
+        vector,
+        metadata: {
+          path: record.path,
+          name: record.name,
+          extension: record.extension,
+          modifiedAt: record.modifiedAt,
+          chunkLabel: chunk.label ?? '',
+          startLine: chunk.startLine,
+          endLine: chunk.endLine,
+        },
+      });
+    }
+
+    // Store chunk vectors
+    if (chunkVectors.length > 0) {
+      await this.vectorStore.upsertChunks(record.id, chunkVectors);
+    }
+
+    // Update stored chunk metadata
+    this.metadataDb.upsertFileChunks(record.id, newStoredChunks);
   }
 
   /** Extract concept keywords from a file record */
@@ -190,7 +324,7 @@ export class Indexer extends EventEmitter {
       if (lang) concepts.add(lang);
     }
 
-    return [...concepts];
+    return Array.from(concepts);
   }
 
   /** Get indexer stats */

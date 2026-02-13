@@ -286,4 +286,80 @@ describe('SearchEngine', () => {
       expect(results).toHaveLength(1);
     });
   });
+
+  describe('chunk deduplication', () => {
+    it('merges multiple chunks from the same file into a single result', async () => {
+      // Return chunk results with chunk IDs
+      vectorStore.search.mockResolvedValue([
+        { id: 'file-001:0', score: 0.9, metadata: { chunkLabel: 'authenticate', startLine: 10 } },
+        { id: 'file-001:1', score: 0.7, metadata: { chunkLabel: 'validate', startLine: 25 } },
+        { id: 'file-002:0', score: 0.6, metadata: { chunkLabel: 'connect', startLine: 5 } },
+      ]);
+
+      const results = await engine.search({ query: 'auth', limit: 10, threshold: 0.3 });
+
+      // Should be deduplicated to 2 files
+      expect(results).toHaveLength(2);
+      const fileIds = results.map(r => r.file.id);
+      expect(fileIds).toContain('file-001');
+      expect(fileIds).toContain('file-002');
+    });
+
+    it('uses highest score from all matching chunks', async () => {
+      vectorStore.search.mockResolvedValue([
+        { id: 'file-001:2', score: 0.5, metadata: {} },
+        { id: 'file-001:0', score: 0.95, metadata: {} },
+        { id: 'file-001:1', score: 0.7, metadata: {} },
+      ]);
+
+      const results = await engine.search({ query: 'test', limit: 10, threshold: 0.3 });
+      expect(results).toHaveLength(1);
+      // Score should be based on best chunk (0.95) + potential recency boost
+      expect(results[0].score).toBeGreaterThanOrEqual(0.95);
+    });
+
+    it('builds snippet from chunk labels', async () => {
+      vectorStore.search.mockResolvedValue([
+        { id: 'file-001:0', score: 0.9, metadata: { chunkLabel: 'authenticate', startLine: 10 } },
+        { id: 'file-001:1', score: 0.7, metadata: { chunkLabel: 'validate', startLine: 25 } },
+      ]);
+
+      const results = await engine.search({ query: 'auth', limit: 10, threshold: 0.3 });
+      expect(results[0].snippet).toContain('authenticate');
+      expect(results[0].snippet).toContain('validate');
+    });
+
+    it('falls back to contentPreview when no chunk labels', async () => {
+      vectorStore.search.mockResolvedValue([
+        { id: 'file-001:0', score: 0.9, metadata: {} },
+      ]);
+
+      const results = await engine.search({ query: 'test', limit: 10, threshold: 0.3 });
+      expect(results[0].snippet).toBe('export function main() {}');
+    });
+
+    it('handles mix of chunked and non-chunked results', async () => {
+      vectorStore.search.mockResolvedValue([
+        { id: 'file-001:0', score: 0.9, metadata: { chunkLabel: 'func1', startLine: 1 } },
+        { id: 'file-002', score: 0.7, metadata: {} },
+        { id: 'file-003:0', score: 0.5, metadata: {} },
+      ]);
+
+      const results = await engine.search({ query: 'test', limit: 10, threshold: 0.3 });
+      expect(results).toHaveLength(3);
+    });
+
+    it('quickSearch deduplicates chunks to file level', async () => {
+      vectorStore.search.mockResolvedValue([
+        { id: 'file-001:0', score: 0.9, metadata: {} },
+        { id: 'file-001:1', score: 0.85, metadata: {} },
+        { id: 'file-002:0', score: 0.7, metadata: {} },
+      ]);
+
+      const results = await engine.quickSearch('test', 5);
+      expect(results).toHaveLength(2);
+      expect(results[0].file.id).toBe('file-001');
+      expect(results[0].score).toBe(0.9);
+    });
+  });
 });
