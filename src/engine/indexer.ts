@@ -83,6 +83,9 @@ export class Indexer extends EventEmitter {
             this.processBatch();
           }, this.batchDelay);
         }
+      }).catch((error) => {
+        console.error('Error in batch processing:', error);
+        this.emit('error', error);
       });
     }
   }

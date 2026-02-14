@@ -38,7 +38,8 @@ export class DashboardServer {
       try {
         const { query, limit = 10, threshold = 0.3 } = req.body;
         // Validate and clamp limit to reasonable bounds
-        const safeLimit = Math.min(Math.max(parseInt(limit) || 10, 1), 100);
+        const parsedLimit = parseInt(limit);
+        const safeLimit = Math.min(Math.max(Number.isNaN(parsedLimit) ? 10 : parsedLimit, 1), 100);
         const results = await this.daemon.search({ query, limit: safeLimit, threshold });
         res.json({ results });
       } catch (error: any) {
@@ -164,7 +165,8 @@ export class DashboardServer {
       try {
         const { fileId } = req.params;
         // Validate and clamp limit to reasonable bounds
-        const limit = Math.min(Math.max(parseInt(req.query.limit as string) || 10, 1), 100);
+        const parsedLimit = parseInt(req.query.limit as string);
+        const limit = Math.min(Math.max(Number.isNaN(parsedLimit) ? 10 : parsedLimit, 1), 100);
         const graph = this.daemon.getGraph();
         const db = this.daemon.getMetadataDb();
         const related = await graph.getRelatedFiles(fileId, limit);
