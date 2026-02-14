@@ -5,10 +5,15 @@ import type { RuvectorDaemon } from '../daemon/daemon.js';
 
 /**
  * Validate and clamp a limit parameter to a safe range
+ * Rejects non-numeric strings and ensures the value is a safe integer
  */
 function validateLimit(value: any, defaultValue = 10, min = 1, max = 100): number {
-  const parsed = parseInt(value);
-  return Math.min(Math.max(Number.isNaN(parsed) ? defaultValue : parsed, min), max);
+  const parsed = Number(value);
+  // Check if it's a valid finite number and an integer
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) {
+    return defaultValue;
+  }
+  return Math.min(Math.max(parsed, min), max);
 }
 
 /**

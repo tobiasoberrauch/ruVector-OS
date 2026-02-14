@@ -80,7 +80,8 @@ export class Indexer extends EventEmitter {
         if (this.queue.length > 0 && !this.batchTimer && !this.processing) {
           this.batchTimer = setTimeout(async () => {
             this.batchTimer = null;
-            // Double-check not already processing (race condition guard)
+            // Guard: processBatch() checks this.processing at entry, but we double-check
+            // here to prevent race where processBatch() might start between line 80 and 81
             if (this.processing) return;
             try {
               await this.processBatch();
@@ -154,18 +155,19 @@ export class Indexer extends EventEmitter {
 
     // Optimization: Check if file exists and content hasn't changed
     // This avoids expensive hash computation in the update case where content is identical
-    // For new files, the hash will be computed in createFileRecord below
+    // If content has changed, we reuse the computed hash to avoid double computation
     const existing = this.metadataDb.getFileByPath(event.path);
+    let computedHash: string | undefined;
     
     if (existing) {
-      const hash = contentHash(content);
-      if (existing.contentHash === hash) {
+      computedHash = contentHash(content);
+      if (existing.contentHash === computedHash) {
         return; // Content unchanged, skip embedding
       }
     }
 
-    // Create file record (this will compute hash for new files)
-    const record = await createFileRecord(event.path, content);
+    // Create file record (pass hash if already computed, otherwise it will compute)
+    const record = await createFileRecord(event.path, content, computedHash);
 
     // Store metadata
     this.metadataDb.upsertFile(record);
