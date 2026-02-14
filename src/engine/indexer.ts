@@ -74,7 +74,16 @@ export class Indexer extends EventEmitter {
         clearTimeout(this.batchTimer);
         this.batchTimer = null;
       }
-      this.processBatch();
+      // Start processing, and ensure timer is restarted if more items arrive
+      this.processBatch().then(() => {
+        // Restart timer if items were added during processing
+        if (this.queue.length > 0 && !this.batchTimer && !this.processing) {
+          this.batchTimer = setTimeout(() => {
+            this.batchTimer = null;
+            this.processBatch();
+          }, this.batchDelay);
+        }
+      });
     }
   }
 
@@ -133,11 +142,15 @@ export class Indexer extends EventEmitter {
 
     if (!content.trim()) return; // Skip empty files
 
-    // Check if content actually changed (avoid re-embedding identical content)
+    // Check if file exists first before computing hash (optimization)
     const existing = this.metadataDb.getFileByPath(event.path);
-    const hash = contentHash(content);
-    if (existing && existing.contentHash === hash) {
-      return; // Content unchanged, skip embedding
+    
+    // Only compute hash if file exists and might be unchanged
+    if (existing) {
+      const hash = contentHash(content);
+      if (existing.contentHash === hash) {
+        return; // Content unchanged, skip embedding
+      }
     }
 
     // Create file record

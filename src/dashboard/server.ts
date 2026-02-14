@@ -13,6 +13,8 @@ export class DashboardServer {
   private wss: WebSocketServer;
   private daemon: RuvectorDaemon;
   private port: number;
+  private eventListeners: Array<{ event: string; listener: (...args: any[]) => void }> = [];
+  private statusInterval?: NodeJS.Timeout;
 
   constructor(daemon: RuvectorDaemon, port = 3333) {
     this.daemon = daemon;
@@ -216,23 +218,38 @@ export class DashboardServer {
     });
 
     // Forward daemon events to all connected clients
-    this.daemon.on('indexed', (file) => {
+    const indexedListener = (file: any) => {
       this.broadcast({ type: 'indexed', data: { path: file.path, name: file.name } });
-    });
-    this.daemon.on('updated', (file) => {
+    };
+    const updatedListener = (file: any) => {
       this.broadcast({ type: 'updated', data: { path: file.path, name: file.name } });
-    });
-    this.daemon.on('deleted', (path) => {
+    };
+    const deletedListener = (path: string) => {
       this.broadcast({ type: 'deleted', data: { path } });
-    });
-    this.daemon.on('log', (msg) => {
+    };
+    const logListener = (msg: string) => {
       this.broadcast({ type: 'log', data: { message: msg } });
-    });
+    };
 
-    // Periodic status updates
-    setInterval(async () => {
-      const status = await this.daemon.getStatus();
-      this.broadcast({ type: 'status', data: status });
+    this.daemon.on('indexed', indexedListener);
+    this.daemon.on('updated', updatedListener);
+    this.daemon.on('deleted', deletedListener);
+    this.daemon.on('log', logListener);
+
+    // Store listeners for cleanup
+    this.eventListeners.push(
+      { event: 'indexed', listener: indexedListener },
+      { event: 'updated', listener: updatedListener },
+      { event: 'deleted', listener: deletedListener },
+      { event: 'log', listener: logListener }
+    );
+
+    // Periodic status updates only if there are connected clients
+    this.statusInterval = setInterval(async () => {
+      if (this.wss.clients.size > 0) {
+        const status = await this.daemon.getStatus();
+        this.broadcast({ type: 'status', data: status });
+      }
     }, 5000);
   }
 
@@ -256,6 +273,18 @@ export class DashboardServer {
 
   /** Stop the server */
   async stop(): Promise<void> {
+    // Clear interval
+    if (this.statusInterval) {
+      clearInterval(this.statusInterval);
+      this.statusInterval = undefined;
+    }
+
+    // Remove event listeners
+    for (const { event, listener } of this.eventListeners) {
+      this.daemon.removeListener(event, listener);
+    }
+    this.eventListeners = [];
+
     return new Promise((resolve) => {
       this.wss.close();
       this.httpServer.close(() => resolve());
