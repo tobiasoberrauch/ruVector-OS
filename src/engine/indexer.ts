@@ -78,9 +78,14 @@ export class Indexer extends EventEmitter {
       this.processBatch().then(() => {
         // Restart timer if items were added during processing
         if (this.queue.length > 0 && !this.batchTimer && !this.processing) {
-          this.batchTimer = setTimeout(() => {
+          this.batchTimer = setTimeout(async () => {
             this.batchTimer = null;
-            this.processBatch();
+            try {
+              await this.processBatch();
+            } catch (error) {
+              console.error('Error in timer batch processing:', error);
+              this.emit('error', error);
+            }
           }, this.batchDelay);
         }
       }).catch((error) => {

@@ -120,7 +120,7 @@ program
 
     // Validate port number
     const port = parseInt(opts.port);
-    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    if (Number.isNaN(port) || port < 1 || port > 65535) {
       console.error(`Error: Invalid port number '${opts.port}'. Must be between 1 and 65535.`);
       process.exit(1);
     }
