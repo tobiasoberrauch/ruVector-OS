@@ -150,10 +150,11 @@ export class Indexer extends EventEmitter {
 
     if (!content.trim()) return; // Skip empty files
 
-    // Check if file exists first before computing hash (optimization)
+    // Optimization: Check if file exists and content hasn't changed
+    // This avoids expensive hash computation in the update case where content is identical
+    // For new files, the hash will be computed in createFileRecord below
     const existing = this.metadataDb.getFileByPath(event.path);
     
-    // Only compute hash if file exists and might be unchanged
     if (existing) {
       const hash = contentHash(content);
       if (existing.contentHash === hash) {
@@ -161,7 +162,7 @@ export class Indexer extends EventEmitter {
       }
     }
 
-    // Create file record
+    // Create file record (this will compute hash for new files)
     const record = await createFileRecord(event.path, content);
 
     // Store metadata

@@ -89,7 +89,7 @@ export function unloadLaunchAgent(): void {
 export function isLaunchAgentLoaded(): boolean {
   try {
     const result = execFileSync('launchctl', ['list', LABEL], {
-      stdio: 'pipe',
+      stdio: ['pipe', 'pipe', 'ignore'], // Ignore stderr like 2>/dev/null
       encoding: 'utf-8',
     });
     return result.includes(LABEL);
