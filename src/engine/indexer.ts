@@ -74,7 +74,27 @@ export class Indexer extends EventEmitter {
         clearTimeout(this.batchTimer);
         this.batchTimer = null;
       }
-      this.processBatch();
+      // Start processing, and ensure timer is restarted if more items arrive
+      this.processBatch().then(() => {
+        // Restart timer if items were added during processing
+        if (this.queue.length > 0 && !this.batchTimer && !this.processing) {
+          this.batchTimer = setTimeout(async () => {
+            this.batchTimer = null;
+            // Guard: processBatch() checks this.processing at entry, but we double-check
+            // here to prevent race where processBatch() might start between line 80 and 81
+            if (this.processing) return;
+            try {
+              await this.processBatch();
+            } catch (error) {
+              console.error('Error in timer batch processing:', error);
+              this.emit('error', error);
+            }
+          }, this.batchDelay);
+        }
+      }).catch((error) => {
+        console.error('Error in batch processing:', error);
+        this.emit('error', error);
+      });
     }
   }
 
@@ -133,15 +153,21 @@ export class Indexer extends EventEmitter {
 
     if (!content.trim()) return; // Skip empty files
 
-    // Check if content actually changed (avoid re-embedding identical content)
+    // Optimization: Check if file exists and content hasn't changed
+    // This avoids expensive hash computation in the update case where content is identical
+    // If content has changed, we reuse the computed hash to avoid double computation
     const existing = this.metadataDb.getFileByPath(event.path);
-    const hash = contentHash(content);
-    if (existing && existing.contentHash === hash) {
-      return; // Content unchanged, skip embedding
+    let computedHash: string | undefined;
+    
+    if (existing) {
+      computedHash = contentHash(content);
+      if (existing.contentHash === computedHash) {
+        return; // Content unchanged, skip embedding
+      }
     }
 
-    // Create file record
-    const record = await createFileRecord(event.path, content);
+    // Create file record (pass hash if already computed, otherwise it will compute)
+    const record = await createFileRecord(event.path, content, computedHash);
 
     // Store metadata
     this.metadataDb.upsertFile(record);

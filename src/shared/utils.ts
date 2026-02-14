@@ -44,7 +44,7 @@ export async function extractContent(filePath: string): Promise<string> {
 }
 
 /** Create an IndexedFile record from a path */
-export async function createFileRecord(filePath: string, content: string): Promise<IndexedFile> {
+export async function createFileRecord(filePath: string, content: string, hash?: string): Promise<IndexedFile> {
   const stats = await stat(filePath);
   const now = Date.now();
   return {
@@ -57,7 +57,7 @@ export async function createFileRecord(filePath: string, content: string): Promi
     indexedAt: now,
     embeddedAt: now,
     contentPreview: content.slice(0, 500),
-    contentHash: contentHash(content),
+    contentHash: hash ?? contentHash(content),
   };
 }
 

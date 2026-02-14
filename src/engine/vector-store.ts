@@ -201,23 +201,21 @@ export class VectorStore {
 
     // Delete chunk entries: fileId:0, fileId:1, ..., fileId:N
     // We don't know how many chunks exist, so try up to a reasonable limit
+    let consecutiveGaps = 0;
+    const maxConsecutiveGaps = 3; // Stop after 3 consecutive missing chunks
+    
     for (let i = 0; i < 1000; i++) {
       const chunkId = `${fileId}:${i}`;
       const success = await this.delete(chunkId);
       if (success) {
         deleted++;
+        consecutiveGaps = 0; // Reset gap counter on successful delete
       } else {
-        // No more chunks — stop once we hit a gap
-        // But continue a few more in case of sparse indices
-        let gapDone = true;
-        for (let j = i + 1; j < i + 3 && j < 1000; j++) {
-          if (await this.delete(`${fileId}:${j}`)) {
-            deleted++;
-            gapDone = false;
-          }
+        consecutiveGaps++;
+        // Early exit if we've hit multiple consecutive gaps
+        if (consecutiveGaps >= maxConsecutiveGaps) {
+          break;
         }
-        if (gapDone) break;
-        i += 3;
       }
     }
 

@@ -1,5 +1,5 @@
 import { writeFile, unlink, access } from 'fs/promises';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { LAUNCH_AGENT_DIR, LAUNCH_AGENT_PLIST, LOG_PATH, DATA_DIR } from '../shared/paths.js';
 import { ensureDir } from '../shared/utils.js';
 
@@ -70,7 +70,7 @@ export async function installLaunchAgent(binaryPath: string): Promise<void> {
 /** Load (start) the LaunchAgent */
 export function loadLaunchAgent(): void {
   try {
-    execSync(`launchctl load "${LAUNCH_AGENT_PLIST}"`, { stdio: 'pipe' });
+    execFileSync('launchctl', ['load', LAUNCH_AGENT_PLIST], { stdio: 'pipe' });
   } catch {
     // May already be loaded
   }
@@ -79,7 +79,7 @@ export function loadLaunchAgent(): void {
 /** Unload (stop) the LaunchAgent */
 export function unloadLaunchAgent(): void {
   try {
-    execSync(`launchctl unload "${LAUNCH_AGENT_PLIST}"`, { stdio: 'pipe' });
+    execFileSync('launchctl', ['unload', LAUNCH_AGENT_PLIST], { stdio: 'pipe' });
   } catch {
     // May not be loaded
   }
@@ -88,8 +88,8 @@ export function unloadLaunchAgent(): void {
 /** Check if LaunchAgent is loaded */
 export function isLaunchAgentLoaded(): boolean {
   try {
-    const result = execSync(`launchctl list "${LABEL}" 2>/dev/null`, {
-      stdio: 'pipe',
+    const result = execFileSync('launchctl', ['list', LABEL], {
+      stdio: ['pipe', 'pipe', 'ignore'], // Ignore stderr like 2>/dev/null
       encoding: 'utf-8',
     });
     return result.includes(LABEL);

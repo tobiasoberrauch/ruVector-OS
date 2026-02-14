@@ -538,8 +538,12 @@ export class MetadataDb {
   /** Delete importance entries below a threshold */
   pruneImportance(threshold: number): number {
     if (!this.db) return 0;
-    const countR = this.db.exec(`SELECT COUNT(*) FROM file_importance WHERE score < ${threshold}`);
-    const count = countR.length > 0 ? (countR[0].values[0][0] as number) : 0;
+    // Use parameterized query to prevent SQL injection
+    const stmt = this.db.prepare('SELECT COUNT(*) FROM file_importance WHERE score < ?');
+    stmt.bind([threshold]);
+    stmt.step();
+    const count = stmt.getAsObject()['COUNT(*)'] as number || 0;
+    stmt.free();
     this.db.run('DELETE FROM file_importance WHERE score < ?', [threshold]);
     this.schedulePersist();
     return count;
@@ -754,8 +758,12 @@ export class MetadataDb {
   pruneContextEvents(olderThanMs: number): number {
     if (!this.db) return 0;
     const cutoff = Date.now() - olderThanMs;
-    const countR = this.db.exec(`SELECT COUNT(*) FROM context_events WHERE timestamp < ${cutoff}`);
-    const count = countR.length > 0 ? (countR[0].values[0][0] as number) : 0;
+    // Use parameterized query to prevent SQL injection
+    const stmt = this.db.prepare('SELECT COUNT(*) FROM context_events WHERE timestamp < ?');
+    stmt.bind([cutoff]);
+    stmt.step();
+    const count = stmt.getAsObject()['COUNT(*)'] as number || 0;
+    stmt.free();
     this.db.run('DELETE FROM context_events WHERE timestamp < ?', [cutoff]);
     this.schedulePersist();
     return count;

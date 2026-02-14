@@ -4,6 +4,19 @@ import { createServer } from 'http';
 import type { RuvectorDaemon } from '../daemon/daemon.js';
 
 /**
+ * Validate and clamp a limit parameter to a safe range
+ * Rejects non-numeric strings and ensures the value is a safe integer
+ */
+function validateLimit(value: any, defaultValue = 10, min = 1, max = 100): number {
+  const parsed = Number(value);
+  // Check if it's a valid finite number and an integer
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) {
+    return defaultValue;
+  }
+  return Math.min(Math.max(parsed, min), max);
+}
+
+/**
  * Web dashboard at localhost:3333
  * Provides: search UI, knowledge graph visualization, index stats, real-time updates
  */
@@ -13,6 +26,8 @@ export class DashboardServer {
   private wss: WebSocketServer;
   private daemon: RuvectorDaemon;
   private port: number;
+  private eventListeners: Array<{ event: string; listener: (...args: any[]) => void }> = [];
+  private statusInterval?: NodeJS.Timeout;
 
   constructor(daemon: RuvectorDaemon, port = 3333) {
     this.daemon = daemon;
@@ -34,11 +49,13 @@ export class DashboardServer {
     // API: Search
     this.app.post('/api/search', async (req, res) => {
       try {
-        const { query, limit = 10, threshold = 0.3 } = req.body;
+        const { query, threshold = 0.3 } = req.body;
+        const limit = validateLimit(req.body.limit, 10);
         const results = await this.daemon.search({ query, limit, threshold });
         res.json({ results });
       } catch (error: any) {
-        res.status(500).json({ error: error.message });
+        console.error('Search error:', error);
+        res.status(500).json({ error: 'An error occurred while searching' });
       }
     });
 
@@ -68,7 +85,8 @@ export class DashboardServer {
           config: this.daemon.getConfig(),
         });
       } catch (error: any) {
-        res.status(500).json({ error: error.message });
+        console.error('Config update error:', error);
+        res.status(500).json({ error: 'An error occurred while updating configuration' });
       }
     });
 
@@ -87,7 +105,8 @@ export class DashboardServer {
         await this.daemon.addWatchDir(dir);
         res.json({ ok: true });
       } catch (error: any) {
-        res.status(500).json({ error: error.message });
+        console.error('Watch directory error:', error);
+        res.status(500).json({ error: 'An error occurred while adding watch directory' });
       }
     });
 
@@ -98,7 +117,8 @@ export class DashboardServer {
         await this.daemon.removeWatchDir(dir);
         res.json({ ok: true });
       } catch (error: any) {
-        res.status(500).json({ error: error.message });
+        console.error('Unwatch directory error:', error);
+        res.status(500).json({ error: 'An error occurred while removing watch directory' });
       }
     });
 
@@ -113,7 +133,8 @@ export class DashboardServer {
         await this.daemon.recordClick(searchId, fileId, position ?? 0);
         res.json({ ok: true });
       } catch (error: any) {
-        res.status(500).json({ error: error.message });
+        console.error('Click recording error:', error);
+        res.status(500).json({ error: 'An error occurred while recording click' });
       }
     });
 
@@ -123,7 +144,8 @@ export class DashboardServer {
         const metrics = this.daemon.getLearningMetrics();
         res.json(metrics);
       } catch (error: any) {
-        res.status(500).json({ error: error.message });
+        console.error('Learning metrics error:', error);
+        res.status(500).json({ error: 'An error occurred while fetching learning metrics' });
       }
     });
 
@@ -133,7 +155,8 @@ export class DashboardServer {
         const analytics = this.daemon.getSearchAnalytics();
         res.json(analytics);
       } catch (error: any) {
-        res.status(500).json({ error: error.message });
+        console.error('Analytics error:', error);
+        res.status(500).json({ error: 'An error occurred while fetching analytics' });
       }
     });
 
@@ -143,7 +166,8 @@ export class DashboardServer {
         const tags = this.daemon.getTags();
         res.json({ tags });
       } catch (error: any) {
-        res.status(500).json({ error: error.message });
+        console.error('Tags error:', error);
+        res.status(500).json({ error: 'An error occurred while fetching tags' });
       }
     });
 
@@ -151,7 +175,7 @@ export class DashboardServer {
     this.app.get('/api/related/:fileId', async (req, res) => {
       try {
         const { fileId } = req.params;
-        const limit = parseInt(req.query.limit as string) || 10;
+        const limit = validateLimit(req.query.limit, 10);
         const graph = this.daemon.getGraph();
         const db = this.daemon.getMetadataDb();
         const related = await graph.getRelatedFiles(fileId, limit);
@@ -169,7 +193,8 @@ export class DashboardServer {
 
         res.json({ related: results });
       } catch (error: any) {
-        res.status(500).json({ error: error.message });
+        console.error('Related files error:', error);
+        res.status(500).json({ error: 'An error occurred while fetching related files' });
       }
     });
 
@@ -179,7 +204,8 @@ export class DashboardServer {
         const groups = this.daemon.getDuplicates();
         res.json({ groups });
       } catch (error: any) {
-        res.status(500).json({ error: error.message });
+        console.error('Duplicates error:', error);
+        res.status(500).json({ error: 'An error occurred while fetching duplicates' });
       }
     });
 
@@ -189,7 +215,8 @@ export class DashboardServer {
         const result = await this.daemon.triggerAutoTag();
         res.json(result);
       } catch (error: any) {
-        res.status(500).json({ error: error.message });
+        console.error('Auto-tagging error:', error);
+        res.status(500).json({ error: 'An error occurred while triggering auto-tagging' });
       }
     });
   }
@@ -202,23 +229,38 @@ export class DashboardServer {
     });
 
     // Forward daemon events to all connected clients
-    this.daemon.on('indexed', (file) => {
+    const indexedListener = (file: any) => {
       this.broadcast({ type: 'indexed', data: { path: file.path, name: file.name } });
-    });
-    this.daemon.on('updated', (file) => {
+    };
+    const updatedListener = (file: any) => {
       this.broadcast({ type: 'updated', data: { path: file.path, name: file.name } });
-    });
-    this.daemon.on('deleted', (path) => {
+    };
+    const deletedListener = (path: string) => {
       this.broadcast({ type: 'deleted', data: { path } });
-    });
-    this.daemon.on('log', (msg) => {
+    };
+    const logListener = (msg: string) => {
       this.broadcast({ type: 'log', data: { message: msg } });
-    });
+    };
 
-    // Periodic status updates
-    setInterval(async () => {
-      const status = await this.daemon.getStatus();
-      this.broadcast({ type: 'status', data: status });
+    this.daemon.on('indexed', indexedListener);
+    this.daemon.on('updated', updatedListener);
+    this.daemon.on('deleted', deletedListener);
+    this.daemon.on('log', logListener);
+
+    // Store listeners for cleanup
+    this.eventListeners.push(
+      { event: 'indexed', listener: indexedListener },
+      { event: 'updated', listener: updatedListener },
+      { event: 'deleted', listener: deletedListener },
+      { event: 'log', listener: logListener }
+    );
+
+    // Periodic status updates only if there are connected clients
+    this.statusInterval = setInterval(async () => {
+      if (this.wss.clients.size > 0) {
+        const status = await this.daemon.getStatus();
+        this.broadcast({ type: 'status', data: status });
+      }
     }, 5000);
   }
 
@@ -242,6 +284,18 @@ export class DashboardServer {
 
   /** Stop the server */
   async stop(): Promise<void> {
+    // Clear interval
+    if (this.statusInterval) {
+      clearInterval(this.statusInterval);
+      this.statusInterval = undefined;
+    }
+
+    // Remove event listeners
+    for (const { event, listener } of this.eventListeners) {
+      this.daemon.removeListener(event, listener);
+    }
+    this.eventListeners = [];
+
     return new Promise((resolve) => {
       this.wss.close();
       this.httpServer.close(() => resolve());
