@@ -80,6 +80,8 @@ export class Indexer extends EventEmitter {
         if (this.queue.length > 0 && !this.batchTimer && !this.processing) {
           this.batchTimer = setTimeout(async () => {
             this.batchTimer = null;
+            // Double-check not already processing (race condition guard)
+            if (this.processing) return;
             try {
               await this.processBatch();
             } catch (error) {

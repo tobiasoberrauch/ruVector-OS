@@ -4,6 +4,14 @@ import { createServer } from 'http';
 import type { RuvectorDaemon } from '../daemon/daemon.js';
 
 /**
+ * Validate and clamp a limit parameter to a safe range
+ */
+function validateLimit(value: any, defaultValue = 10, min = 1, max = 100): number {
+  const parsed = parseInt(value);
+  return Math.min(Math.max(Number.isNaN(parsed) ? defaultValue : parsed, min), max);
+}
+
+/**
  * Web dashboard at localhost:3333
  * Provides: search UI, knowledge graph visualization, index stats, real-time updates
  */
@@ -36,11 +44,9 @@ export class DashboardServer {
     // API: Search
     this.app.post('/api/search', async (req, res) => {
       try {
-        const { query, limit = 10, threshold = 0.3 } = req.body;
-        // Validate and clamp limit to reasonable bounds
-        const parsedLimit = parseInt(limit);
-        const safeLimit = Math.min(Math.max(Number.isNaN(parsedLimit) ? 10 : parsedLimit, 1), 100);
-        const results = await this.daemon.search({ query, limit: safeLimit, threshold });
+        const { query, threshold = 0.3 } = req.body;
+        const limit = validateLimit(req.body.limit, 10);
+        const results = await this.daemon.search({ query, limit, threshold });
         res.json({ results });
       } catch (error: any) {
         console.error('Search error:', error);
@@ -164,9 +170,7 @@ export class DashboardServer {
     this.app.get('/api/related/:fileId', async (req, res) => {
       try {
         const { fileId } = req.params;
-        // Validate and clamp limit to reasonable bounds
-        const parsedLimit = parseInt(req.query.limit as string);
-        const limit = Math.min(Math.max(Number.isNaN(parsedLimit) ? 10 : parsedLimit, 1), 100);
+        const limit = validateLimit(req.query.limit, 10);
         const graph = this.daemon.getGraph();
         const db = this.daemon.getMetadataDb();
         const related = await graph.getRelatedFiles(fileId, limit);
