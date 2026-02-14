@@ -1,4 +1,4 @@
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 
 export interface BatteryStatus {
   onAC: boolean;
@@ -12,7 +12,7 @@ export interface BatteryStatus {
  */
 export function getBatteryStatus(): Promise<BatteryStatus> {
   return new Promise((resolve) => {
-    exec('pmset -g batt', { timeout: 5000 }, (err, stdout) => {
+    execFile('pmset', ['-g', 'batt'], { timeout: 5000 }, (err, stdout) => {
       if (err || !stdout) {
         resolve({ onAC: true, batteryPercent: 100 });
         return;

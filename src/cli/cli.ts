@@ -118,12 +118,19 @@ program
     console.log(`  Dashboard: http://localhost:${opts.port}`);
     console.log('');
 
+    // Validate port number
+    const port = parseInt(opts.port);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      console.error(`Error: Invalid port number '${opts.port}'. Must be between 1 and 65535.`);
+      process.exit(1);
+    }
+
     // Create and start daemon
     const daemon = new RuvectorDaemon();
     await daemon.init();
 
     // Start dashboard
-    const dashboard = new DashboardServer(daemon, parseInt(opts.port));
+    const dashboard = new DashboardServer(daemon, port);
     await dashboard.start();
 
     // Wire up logging

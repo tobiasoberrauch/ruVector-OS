@@ -35,10 +35,13 @@ export class DashboardServer {
     this.app.post('/api/search', async (req, res) => {
       try {
         const { query, limit = 10, threshold = 0.3 } = req.body;
-        const results = await this.daemon.search({ query, limit, threshold });
+        // Validate and clamp limit to reasonable bounds
+        const safeLimit = Math.min(Math.max(parseInt(limit) || 10, 1), 100);
+        const results = await this.daemon.search({ query, limit: safeLimit, threshold });
         res.json({ results });
       } catch (error: any) {
-        res.status(500).json({ error: error.message });
+        console.error('Search error:', error);
+        res.status(500).json({ error: 'An error occurred while searching' });
       }
     });
 
@@ -68,7 +71,8 @@ export class DashboardServer {
           config: this.daemon.getConfig(),
         });
       } catch (error: any) {
-        res.status(500).json({ error: error.message });
+        console.error('Config update error:', error);
+        res.status(500).json({ error: 'An error occurred while updating configuration' });
       }
     });
 
@@ -87,7 +91,8 @@ export class DashboardServer {
         await this.daemon.addWatchDir(dir);
         res.json({ ok: true });
       } catch (error: any) {
-        res.status(500).json({ error: error.message });
+        console.error('Watch directory error:', error);
+        res.status(500).json({ error: 'An error occurred while adding watch directory' });
       }
     });
 
@@ -98,7 +103,8 @@ export class DashboardServer {
         await this.daemon.removeWatchDir(dir);
         res.json({ ok: true });
       } catch (error: any) {
-        res.status(500).json({ error: error.message });
+        console.error('Unwatch directory error:', error);
+        res.status(500).json({ error: 'An error occurred while removing watch directory' });
       }
     });
 
@@ -113,7 +119,8 @@ export class DashboardServer {
         await this.daemon.recordClick(searchId, fileId, position ?? 0);
         res.json({ ok: true });
       } catch (error: any) {
-        res.status(500).json({ error: error.message });
+        console.error('Click recording error:', error);
+        res.status(500).json({ error: 'An error occurred while recording click' });
       }
     });
 
@@ -123,7 +130,8 @@ export class DashboardServer {
         const metrics = this.daemon.getLearningMetrics();
         res.json(metrics);
       } catch (error: any) {
-        res.status(500).json({ error: error.message });
+        console.error('Learning metrics error:', error);
+        res.status(500).json({ error: 'An error occurred while fetching learning metrics' });
       }
     });
 
@@ -133,7 +141,8 @@ export class DashboardServer {
         const analytics = this.daemon.getSearchAnalytics();
         res.json(analytics);
       } catch (error: any) {
-        res.status(500).json({ error: error.message });
+        console.error('Analytics error:', error);
+        res.status(500).json({ error: 'An error occurred while fetching analytics' });
       }
     });
 
@@ -143,7 +152,8 @@ export class DashboardServer {
         const tags = this.daemon.getTags();
         res.json({ tags });
       } catch (error: any) {
-        res.status(500).json({ error: error.message });
+        console.error('Tags error:', error);
+        res.status(500).json({ error: 'An error occurred while fetching tags' });
       }
     });
 
@@ -151,7 +161,8 @@ export class DashboardServer {
     this.app.get('/api/related/:fileId', async (req, res) => {
       try {
         const { fileId } = req.params;
-        const limit = parseInt(req.query.limit as string) || 10;
+        // Validate and clamp limit to reasonable bounds
+        const limit = Math.min(Math.max(parseInt(req.query.limit as string) || 10, 1), 100);
         const graph = this.daemon.getGraph();
         const db = this.daemon.getMetadataDb();
         const related = await graph.getRelatedFiles(fileId, limit);
@@ -169,7 +180,8 @@ export class DashboardServer {
 
         res.json({ related: results });
       } catch (error: any) {
-        res.status(500).json({ error: error.message });
+        console.error('Related files error:', error);
+        res.status(500).json({ error: 'An error occurred while fetching related files' });
       }
     });
 
@@ -179,7 +191,8 @@ export class DashboardServer {
         const groups = this.daemon.getDuplicates();
         res.json({ groups });
       } catch (error: any) {
-        res.status(500).json({ error: error.message });
+        console.error('Duplicates error:', error);
+        res.status(500).json({ error: 'An error occurred while fetching duplicates' });
       }
     });
 
@@ -189,7 +202,8 @@ export class DashboardServer {
         const result = await this.daemon.triggerAutoTag();
         res.json(result);
       } catch (error: any) {
-        res.status(500).json({ error: error.message });
+        console.error('Auto-tagging error:', error);
+        res.status(500).json({ error: 'An error occurred while triggering auto-tagging' });
       }
     });
   }
